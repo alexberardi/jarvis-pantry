@@ -25,6 +25,14 @@ class Settings(BaseSettings):
 
     # Rate limiting
     rate_limit_per_ip_per_hour: int = Field(100, alias="RATE_LIMIT_PER_IP_PER_HOUR")
+    submission_rate_limit_per_hour: int = Field(10, alias="SUBMISSION_RATE_LIMIT_PER_HOUR")
+
+    # Validation pipeline
+    max_concurrent_container_tests: int = Field(3, alias="MAX_CONCURRENT_CONTAINER_TESTS")
+    max_concurrent_clones: int = Field(5, alias="MAX_CONCURRENT_CLONES")
+    sdk_path: str = Field("/app/jarvis-command-sdk", alias="JARVIS_SDK_PATH")
+    container_test_timeout: int = Field(180, alias="CONTAINER_TEST_TIMEOUT")
+    require_llm_key: bool = Field(True, alias="REQUIRE_LLM_KEY")
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -82,6 +82,8 @@ class Command(Base):
     icon_url = Column(String(512))
     install_count = Column(Integer, default=0)
     danger_rating = Column(Integer)  # 1-5
+    package_type = Column(String(20), default="command")  # "command" or "bundle"
+    components = Column(JSON, nullable=True)  # list of {type, name, path, description}
     verified = Column(Boolean, default=False)
     published = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
@@ -154,7 +156,10 @@ class Submission(Base):
     command_id = Column(Integer, ForeignKey("commands.id"), nullable=True)
     github_repo_url = Column(String(512), nullable=False)
     author_id = Column(Integer, ForeignKey("authors.id"), nullable=False)
-    status = Column(String(50), default="pending")  # pending, validating, reviewing, published, rejected
+    status = Column(String(50), default="pending")  # pending, static_analysis, ai_review, container_test, published, rejected
     error_message = Column(Text)
+    static_analysis_result = Column(JSON, nullable=True)
+    container_test_result = Column(JSON, nullable=True)
+    llm_provider = Column(String(20), nullable=True)
     submitted_at = Column(DateTime(timezone=True), default=_utcnow)
     completed_at = Column(DateTime(timezone=True))

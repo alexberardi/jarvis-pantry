@@ -2,24 +2,41 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..auth import validate_github_token
+from ..config import get_settings
 from ..db import get_db
 from ..models import Author, Command, CommandVersion, Submission
-from ..services.submission_pipeline import process_submission
+from ..rate_limiter import RateLimiter
 from ..services.github_service import (
     RepoValidationError,
     clone_repo,
-    validate_structure,
     cleanup_repo,
+    read_component_sources,
+    validate_structure,
+    verify_repo_access,
 )
+from ..services.job_queue import SubmissionJob, validation_queue
+from ..services.security_review import estimate_review_cost
+from ..services.static_analysis import run_static_analysis
+from ..services.submission_pipeline import process_submission
 
 router = APIRouter()
+
+# Rate limiter for quick-submit: 10/hour per IP
+_submit_limiter = RateLimiter(requests_per_hour=get_settings().submission_rate_limit_per_hour)
+
+# Semaphore to limit concurrent git clones
+_clone_semaphore = asyncio.Semaphore(get_settings().max_concurrent_clones)
+
+
+# ── Full submission (GitHub OAuth + AI review) ──────────────────────────
 
 
 class SubmitRequest(BaseModel):
@@ -39,11 +56,9 @@ async def submit_command(
     Requires GitHub OAuth token. The submitter provides their own LLM API key
     for the AI security review (BYOK).
     """
-    # Validate provider
     if body.llm_provider not in ("claude", "openai"):
         raise HTTPException(400, "llm_provider must be 'claude' or 'openai'")
 
-    # Validate repo URL
     if not body.repo_url.startswith("https://github.com/"):
         raise HTTPException(400, "repo_url must be a public GitHub HTTPS URL")
 
@@ -62,13 +77,16 @@ async def submit_command(
         raise HTTPException(502, f"AI review failed: {e}")
 
 
+# ── Submission status (GitHub OAuth) ─────────────────────────────────────
+
+
 @router.get("/v1/submissions/{submission_id}")
 def get_submission(
     submission_id: int,
     author: Author = Depends(validate_github_token),
     db: Session = Depends(get_db),
 ):
-    """Check status of a submission."""
+    """Check status of a submission (requires GitHub auth)."""
     submission = db.query(Submission).filter(
         Submission.id == submission_id,
         Submission.author_id == author.id,
@@ -87,106 +105,283 @@ def get_submission(
     }
 
 
+# ── Public submission status (for polling) ──────────────────────────────
+
+
+@router.get("/v1/submissions/{submission_id}/status")
+def get_submission_status(
+    submission_id: int,
+    db: Session = Depends(get_db),
+):
+    """Public status endpoint for polling submission progress.
+
+    No auth required — submission_id acts as a nonce.
+    """
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(404, "Submission not found")
+
+    # Build stages response
+    stages = _build_stages(submission)
+
+    # Build result for terminal states
+    result = None
+    if submission.status == "published" and submission.command_id:
+        command = db.query(Command).filter(Command.id == submission.command_id).first()
+        if command:
+            result = {
+                "command_name": command.command_name,
+                "display_name": command.display_name,
+                "version": command.latest_version,
+            }
+    elif submission.status == "rejected":
+        result = {
+            "reason": submission.error_message or "Unknown",
+        }
+
+    # Extract command_name from static analysis or DB
+    command_name = None
+    if submission.command_id:
+        command = db.query(Command).filter(Command.id == submission.command_id).first()
+        if command:
+            command_name = command.command_name
+    elif submission.static_analysis_result and isinstance(submission.static_analysis_result, dict):
+        command_name = submission.static_analysis_result.get("command_name")
+
+    return {
+        "submission_id": submission.id,
+        "status": submission.status,
+        "command_name": command_name,
+        "stages": stages,
+        "result": result,
+    }
+
+
+def _build_stages(submission: Submission) -> dict:
+    """Build the pipeline stages object for the status response."""
+    status = submission.status
+
+    # Status progression: pending → static_analysis → ai_review → container_test → published/rejected
+    STAGE_ORDER = ["pending", "static_analysis", "ai_review", "container_test", "published", "rejected"]
+
+    def _stage_status(stage_name: str) -> str:
+        """Determine if a stage is done, in_progress, or pending."""
+        if status == "rejected":
+            # Find which stage we were in when rejected
+            if stage_name == "static_analysis" and submission.static_analysis_result:
+                sa = submission.static_analysis_result
+                return "passed" if sa.get("passed") else "failed"
+            if stage_name == "ai_review":
+                if submission.container_test_result is not None:
+                    return "passed"  # we got past AI review
+                if submission.static_analysis_result and not submission.static_analysis_result.get("passed"):
+                    return "pending"
+                if submission.error_message and "AI review rejected" in submission.error_message:
+                    return "failed"
+                return "pending"
+            if stage_name == "container_test":
+                if submission.container_test_result:
+                    ct = submission.container_test_result
+                    return "passed" if ct.get("passed") else "failed"
+                return "pending"
+            return "pending"
+
+        if status == "published" or status == "pending_review":
+            if stage_name in ("static_analysis", "container_test"):
+                return "passed"
+            if stage_name == "ai_review":
+                return "passed" if submission.llm_provider else "skipped"
+            return "done"
+
+        # In-progress states
+        if status == stage_name:
+            return "in_progress"
+
+        # Check if we've passed this stage
+        try:
+            current_idx = STAGE_ORDER.index(status)
+            stage_idx = STAGE_ORDER.index(stage_name)
+            if stage_idx < current_idx:
+                return "passed" if stage_name != "pending" else "done"
+        except ValueError:
+            pass
+
+        return "pending"
+
+    stages: dict = {
+        "queue": {"status": "done" if status != "pending" else "waiting"},
+    }
+
+    # Static analysis
+    sa_status = _stage_status("static_analysis")
+    sa_stage: dict = {"status": sa_status}
+    if submission.static_analysis_result:
+        sa = submission.static_analysis_result
+        sa_stage["checks_passed"] = sa.get("checks_passed", 0)
+        sa_stage["warnings"] = sa.get("warnings", [])
+        sa_stage["dangerous_patterns"] = sa.get("dangerous_patterns", [])
+    stages["static_analysis"] = sa_stage
+
+    # AI review
+    ai_status = _stage_status("ai_review")
+    ai_stage: dict = {"status": ai_status}
+    if submission.llm_provider:
+        ai_stage["provider"] = submission.llm_provider
+    stages["ai_review"] = ai_stage
+
+    # Container test
+    ct_status = _stage_status("container_test")
+    ct_stage: dict = {"status": ct_status}
+    if submission.container_test_result:
+        ct = submission.container_test_result
+        ct_stage["pass_count"] = ct.get("pass_count", 0)
+        ct_stage["fail_count"] = ct.get("fail_count", 0)
+        ct_stage["test_count"] = ct.get("test_count", 0)
+        ct_stage["errors"] = ct.get("errors", [])
+    stages["container_test"] = ct_stage
+
+    return stages
+
+
+# ── Quick submit (no OAuth, with validation pipeline) ───────────────────
+
+
 class QuickSubmitRequest(BaseModel):
     repo_url: str
-    author_github: str = "community"
+    llm_provider: str = "claude"  # "claude" or "openai"
+    llm_api_key: str = ""
+    confirm: bool = False  # Must be True to enqueue; False = dry run (validate + cost estimate)
 
 
 @router.post("/v1/commands/quick-submit")
-def quick_submit(
+async def quick_submit(
     body: QuickSubmitRequest,
+    request: Request,
+    author: Author = Depends(validate_github_token),
     db: Session = Depends(get_db),
 ):
-    """Submit a command by GitHub URL — no OAuth, no AI review.
+    """Submit a command by GitHub URL with validation pipeline.
 
-    Clones the repo, validates structure + manifest, and publishes directly.
+    Requires GitHub OAuth. Verifies the authenticated user has push access
+    to the repo before accepting the submission.
+
+    Two-step flow:
+    1. Submit with confirm=false (default): verify ownership, clone, validate,
+       static analysis, return cost estimate. Repo is cleaned up.
+    2. Submit again with confirm=true: same validation, then enqueues for
+       AI review + container test.
     """
+    settings = get_settings()
+
+    # Rate limit
+    client_ip = request.client.host if request.client else "unknown"
+    if not _submit_limiter.check(client_ip):
+        raise HTTPException(429, "Rate limit exceeded. Try again later.")
+
     repo_url = body.repo_url.rstrip("/")
     if not repo_url.startswith("https://github.com/"):
         raise HTTPException(400, "repo_url must be a public GitHub HTTPS URL")
 
+    # Enforce LLM key in prod
+    if settings.require_llm_key and not body.llm_api_key:
+        raise HTTPException(400, "llm_api_key is required. Provide your Claude or OpenAI API key for security review.")
+
+    if body.llm_api_key and body.llm_provider not in ("claude", "openai"):
+        raise HTTPException(400, "llm_provider must be 'claude' or 'openai'")
+
+    # Verify repo ownership — extract token from the already-validated author
+    # The raw token is in the Authorization header
+    auth_header = request.headers.get("Authorization", "")
+    github_token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+    try:
+        await verify_repo_access(repo_url, github_token)
+    except RepoValidationError as e:
+        raise HTTPException(403, str(e))
+
     repo_dir = None
     try:
-        # 1. Clone
-        repo_dir = clone_repo(repo_url)
+        # 1. Clone (sync, with semaphore)
+        async with _clone_semaphore:
+            repo_dir = await asyncio.to_thread(clone_repo, repo_url)
 
-        # 2. Validate
+        # 2. Validate structure
         manifest = validate_structure(repo_dir)
         command_name = manifest["name"]
         version = manifest.get("version", "0.1.0")
 
-        # 3. Find or create author
-        author = db.query(Author).filter(
-            Author.github_username == body.author_github
-        ).first()
-        if not author:
-            author = Author(
-                github_id=0,
-                github_username=body.author_github,
-                display_name=body.author_github,
-            )
-            db.add(author)
-            db.flush()
+        # 3. Static analysis (sync, fast)
+        analysis = run_static_analysis(repo_dir)
 
-        # 4. Upsert command
-        existing = db.query(Command).filter(
-            Command.command_name == command_name
-        ).first()
+        if not analysis.passed:
+            cleanup_repo(repo_dir)
+            raise HTTPException(422, detail={
+                "message": "Static analysis failed",
+                "errors": analysis.errors,
+                "warnings": analysis.warnings,
+                "dangerous_patterns": analysis.dangerous_patterns,
+            })
 
-        if existing:
-            existing.description = manifest.get("description", existing.description)
-            existing.display_name = manifest.get("display_name", existing.display_name)
-            existing.github_repo_url = repo_url
-            existing.categories = manifest.get("categories", [])
-            existing.platforms = manifest.get("platforms", [])
-            existing.license = manifest.get("license")
-            existing.latest_version = version
-            existing.published = True
-            command = existing
-        else:
-            command = Command(
-                command_name=command_name,
-                display_name=manifest.get("display_name", command_name),
-                description=manifest.get("description", ""),
-                github_repo_url=repo_url,
-                author_id=author.id,
-                latest_version=version,
-                categories=manifest.get("categories", []),
-                platforms=manifest.get("platforms", []),
-                license=manifest.get("license", "MIT"),
-                published=True,
-            )
-            db.add(command)
-            db.flush()
+        # 4. Estimate AI review cost (if key provided)
+        cost_estimate = None
+        if body.llm_api_key:
+            comp_sources = read_component_sources(repo_dir, manifest)
+            source_code = "\n\n".join(comp_sources.values())
+            cost_estimate = estimate_review_cost(source_code, body.llm_provider)
 
-        # 5. Add version
-        existing_ver = db.query(CommandVersion).filter(
-            CommandVersion.command_id == command.id,
-            CommandVersion.version == version,
-        ).first()
-        if not existing_ver:
-            cmd_version = CommandVersion(
-                command_id=command.id,
-                version=version,
-                git_tag=f"v{version}",
-                manifest_json=manifest,
-                min_jarvis_version=manifest.get("min_jarvis_version", "0.9.0"),
-            )
-            db.add(cmd_version)
+        # 4b. Dry run — return validation + cost without enqueuing
+        if not body.confirm:
+            cleanup_repo(repo_dir)
+            return {
+                "status": "preview",
+                "command_name": command_name,
+                "version": version,
+                "static_analysis": analysis.to_dict(),
+                "cost_estimate": cost_estimate,
+            }
 
+        # 5. Author comes from GitHub OAuth (already validated)
+        # 6. Create submission record
+        submission = Submission(
+            github_repo_url=repo_url,
+            author_id=author.id,
+            status="static_analysis",
+            static_analysis_result=analysis.to_dict(),
+            llm_provider=body.llm_provider if body.llm_api_key else None,
+        )
+        db.add(submission)
+        db.commit()
+        db.refresh(submission)
+
+        # 7. Enqueue async job (repo_dir ownership transfers to worker)
+        job = SubmissionJob(
+            submission_id=submission.id,
+            repo_dir=repo_dir,
+            manifest=manifest,
+            llm_provider=body.llm_provider,
+            llm_api_key=body.llm_api_key,
+            author_github=author.github_username,
+        )
+        await validation_queue.enqueue(job)
+
+        submission.status = "ai_review" if body.llm_api_key else "container_test"
         db.commit()
 
         return {
-            "status": "published",
+            "submission_id": submission.id,
+            "status": "queued",
             "command_name": command_name,
-            "display_name": manifest.get("display_name", command_name),
             "version": version,
-            "description": manifest.get("description", ""),
+            "static_analysis": analysis.to_dict(),
+            "cost_estimate": cost_estimate,
         }
 
+    except HTTPException:
+        raise
     except RepoValidationError as e:
-        raise HTTPException(422, str(e))
-
-    finally:
         if repo_dir:
             cleanup_repo(repo_dir)
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        if repo_dir:
+            cleanup_repo(repo_dir)
+        raise HTTPException(500, f"Submission failed: {e}")

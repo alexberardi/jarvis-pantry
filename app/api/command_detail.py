@@ -59,6 +59,8 @@ def get_command(command_name: str, db: Session = Depends(get_db)):
         "danger_rating": cmd.danger_rating,
         "verified": cmd.verified,
         "icon_url": cmd.icon_url,
+        "package_type": cmd.package_type or "command",
+        "components": cmd.components or [],
         "created_at": cmd.created_at.isoformat() if cmd.created_at else None,
         "updated_at": cmd.updated_at.isoformat() if cmd.updated_at else None,
         "security_report": security_report,

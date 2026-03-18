@@ -62,6 +62,8 @@ def list_commands(
                 "danger_rating": cmd.danger_rating,
                 "verified": cmd.verified,
                 "icon_url": cmd.icon_url,
+                "package_type": cmd.package_type or "command",
+                "components": cmd.components or [],
             }
             for cmd in commands
         ],

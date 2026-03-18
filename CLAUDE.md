@@ -99,4 +99,100 @@ Run migrations: `alembic upgrade head`
 - `jarvis-node-mobile` — (future) Store UI screen
 - `jarvis-admin` — (future) Store management tab
 
+## Package Bundles
+
+The Pantry supports multi-component bundles via `jarvis_package.yaml`.
+A single repo submission can contain commands, agents, device protocols, and device
+managers. The validation pipeline analyzes each component by type.
+
+### Manifest schema
+
+```yaml
+name: "smart-home-lifx"
+display_name: "LIFX Smart Home"
+description: "Complete LIFX control"
+version: "1.0.0"
+components:
+  - type: command
+    name: turn_lights
+    path: commands/turn_lights/command.py
+  - type: agent
+    name: home_state_agent
+    path: agents/home_state_agent/agent.py
+```
+
+Repos with only `jarvis_command.yaml` and `command.py` (no `components` field)
+are treated as single-command packages automatically.
+
+### Shared code in bundles
+
+Bundle repos often need shared code across components (e.g., a service client used
+by both a command and an agent). These should go in a **package-specific directory**:
+
+```
+lifx_shared/           # Good — unique name
+  lifx_client.py
+  helpers.py
+```
+
+**Do NOT use** `services/`, `utils/`, `core/`, or other node built-in package names
+for shared code. When installed, shared code is added to `sys.path` — using a
+built-in name would shadow the node's own packages and break things.
+
+The static analysis pipeline warns on this:
+> Shared directory 'services/' shadows a node built-in package. Rename to something
+> package-specific (e.g., 'shared/' or 'lib/').
+
+### Component types
+
+| Type | Interface | Install dir on node |
+|------|-----------|---------------------|
+| `command` | `IJarvisCommand` | `commands/custom_commands/{name}/` |
+| `agent` | `IJarvisAgent` | `agents/custom_agents/{name}/` |
+| `device_protocol` | `IJarvisDeviceProtocol` | `device_families/custom_families/{name}/` |
+| `device_manager` | `IJarvisDeviceManager` | `device_managers/custom_managers/{name}/` |
+
+### Component inference
+
+When `components` is not declared in the manifest, the pipeline infers from repo
+directory structure: `commands/*/command.py`, `agents/*/agent.py`,
+`device_families/*/protocol.py`, `device_managers/*/manager.py`, or `command.py` at root.
+
+### DB model
+
+The `commands` table has `package_type` (`"command"` or `"bundle"`) and `components`
+(JSON array) columns. No table rename — `package_type` distinguishes bundles.
+
+## Validation Pipeline
+
+Submissions go through: **structure validation → static analysis → AI security review → container tests → publish**.
+
+### Static analysis (`static_analysis.py`)
+
+Per-component type checking:
+
+| Type | Base class checked | Required methods |
+|------|--------------------|------------------|
+| `command` | `IJarvisCommand` | `command_name`, `description`, `parameters`, `required_secrets`, `keywords`, `run`, `generate_prompt_examples`, `generate_adapter_examples` |
+| `agent` | `IJarvisAgent` | `name`, `description`, `schedule`, `required_secrets`, `run`, `get_context_data` |
+| `device_protocol` | `IJarvisDeviceProtocol` | `protocol_name`, `supported_domains`, `discover`, `control`, `get_state` |
+| `device_manager` | `IJarvisDeviceManager` | `name`, `friendly_name`, `description`, `collect_devices` |
+
+Also flags: dangerous imports, raw DB access, SQL mutations, cross-command data access, shared dir name collisions.
+
+### Container tests (`container_test.py`)
+
+Uses a **cached base image** (`jarvis-cmd-test-base:latest`) with the SDK + pyyaml pre-installed.
+Per-submission builds only copy the repo + install extra pip deps (~3s for typical packages).
+
+The test harness (`test_harness.py`) runs inside `--network=none` containers with strict
+resource limits (128MB RAM, 0.5 CPU, read-only filesystem). It discovers components from
+the manifest or infers from directory structure, then runs type-specific behavioral tests.
+
+### AI security review (`security_review.py`)
+
+BYOK (bring your own key) — submitter provides their Claude or OpenAI API key.
+Prompt includes interface docs for all 4 component types. For bundles, all component
+sources are concatenated with `## Component: {name} ({type})` headers.
+
 ## Port: 7720

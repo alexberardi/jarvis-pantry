@@ -19,11 +19,11 @@ from ..models import Author, Command, CommandVersion, SecurityReport, Submission
 from .github_service import (
     clone_repo,
     validate_structure,
-    read_command_source,
+    read_component_sources,
     cleanup_repo,
     RepoValidationError,
 )
-from .security_review import run_security_review, SecurityReviewResult
+from .security_review import format_bundle_source, run_security_review, SecurityReviewResult
 
 
 async def process_submission(
@@ -78,12 +78,27 @@ async def process_submission(
         submission.status = "reviewing"
         db.commit()
 
-        source_code = read_command_source(repo_dir)
+        components = manifest.get("components", [])
+        comp_sources = read_component_sources(repo_dir, manifest)
+        if components:
+            comp_type_map = {c["name"]: c.get("type", "command") for c in components}
+            typed_sources = {
+                name: (comp_type_map.get(name, "command"), src)
+                for name, src in comp_sources.items()
+            }
+            source_code = format_bundle_source(typed_sources)
+        else:
+            source_code = list(comp_sources.values())[0] if comp_sources else ""
         review: SecurityReviewResult = await run_security_review(
             source_code, llm_provider, llm_api_key
         )
 
         # 4. Create/update records
+        is_bundle = len(components) > 1 or (
+            len(components) == 1 and components[0].get("type") != "command"
+        )
+        package_type = "bundle" if is_bundle else "command"
+
         if existing:
             command = existing
             command.description = manifest.get("description", command.description)
@@ -94,6 +109,8 @@ async def process_submission(
             command.license = manifest.get("license")
             command.latest_version = version
             command.danger_rating = review.danger_score
+            command.package_type = package_type
+            command.components = components if components else None
         else:
             command = Command(
                 command_name=command_name,
@@ -106,6 +123,8 @@ async def process_submission(
                 platforms=manifest.get("platforms", []),
                 license=manifest.get("license", "MIT"),
                 danger_rating=review.danger_score,
+                package_type=package_type,
+                components=components if components else None,
             )
             db.add(command)
             db.flush()
