@@ -7,7 +7,7 @@ from pydantic import Field
 
 
 class Settings(BaseSettings):
-    pantry_port: int = Field(7720, alias="PANTRY_PORT")
+    pantry_port: int = Field(7721, alias="PANTRY_PORT")
     database_url: str = Field("postgresql://postgres:postgres@localhost:5432/jarvis_pantry", alias="DATABASE_URL")
 
     # GitHub OAuth

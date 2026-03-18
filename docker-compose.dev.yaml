@@ -2,7 +2,7 @@ services:
   jarvis-pantry:
     build: .
     ports:
-      - "${PANTRY_PORT:-7720}:${PANTRY_PORT:-7720}"
+      - "${PANTRY_PORT:-7721}:${PANTRY_PORT:-7721}"
     volumes:
       - ./app:/app/app
       - ./.env:/app/.env
@@ -14,7 +14,7 @@ services:
       - "${DOCKER_HOST_ALIAS:-host.docker.internal}:host-gateway"
     command: >
       sh -c "alembic upgrade head &&
-             uvicorn app.main:app --host 0.0.0.0 --port ${PANTRY_PORT:-7720} --reload"
+             uvicorn app.main:app --host 0.0.0.0 --port ${PANTRY_PORT:-7721} --reload"
 
   postgres:
     profiles: ["standalone"]

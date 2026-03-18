@@ -16,6 +16,6 @@ COPY alembic.ini .
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PANTRY_PORT=7720
+ENV PANTRY_PORT=7721
 
-CMD ["bash", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PANTRY_PORT:-7720}"]
+CMD ["bash", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PANTRY_PORT:-7721}"]

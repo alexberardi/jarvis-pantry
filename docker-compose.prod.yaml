@@ -2,7 +2,7 @@ services:
   jarvis-pantry:
     build: .
     ports:
-      - "${PANTRY_PORT:-7720}:${PANTRY_PORT:-7720}"
+      - "${PANTRY_PORT:-7721}:${PANTRY_PORT:-7721}"
     env_file:
       - .env
     environment:
