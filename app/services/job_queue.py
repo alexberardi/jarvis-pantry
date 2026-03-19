@@ -36,6 +36,7 @@ class SubmissionJob:
     llm_provider: str
     llm_api_key: str
     author_github: str
+    repo_url: str = ""
 
     def zero_key(self) -> None:
         """Zero out the API key after use."""
@@ -186,7 +187,7 @@ class ValidationQueue:
                 command = existing
                 command.description = job.manifest.get("description", command.description)
                 command.display_name = job.manifest.get("display_name", command.display_name)
-                command.github_repo_url = f"https://github.com/{job.author_github}/{command_name}"
+                command.github_repo_url = job.repo_url or f"https://github.com/{job.author_github}/{command_name}"
                 command.categories = job.manifest.get("categories", [])
                 command.platforms = job.manifest.get("platforms", [])
                 command.license = job.manifest.get("license")
@@ -214,7 +215,7 @@ class ValidationQueue:
                     command_name=command_name,
                     display_name=job.manifest.get("display_name", command_name),
                     description=job.manifest.get("description", ""),
-                    github_repo_url=f"https://github.com/{job.author_github}/{command_name}",
+                    github_repo_url=job.repo_url or f"https://github.com/{job.author_github}/{command_name}",
                     author_id=author.id,
                     latest_version=version,
                     categories=job.manifest.get("categories", []),

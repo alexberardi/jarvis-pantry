@@ -32,24 +32,30 @@ app/
 ├── config.py                  # Pydantic Settings
 ├── db.py                      # SQLAlchemy engine + session
 ├── models.py                  # Author, Command, Version, Review, etc.
-├── auth.py                    # GitHub OAuth + Household JWT
+├── auth.py                    # GitHub OAuth (public_repo scope for Forge)
 ├── rate_limiter.py            # In-memory rate limiting
 ├── api/
 │   ├── browse.py              # GET /v1/commands, /v1/categories
 │   ├── command_detail.py      # GET /v1/commands/{name}
 │   ├── download.py            # GET /v1/commands/{name}/download
 │   ├── submit.py              # POST /v1/commands (submission + AI review)
-│   └── reviews.py             # GET/POST reviews, admin verify/unpublish
+│   ├── reviews.py             # GET/POST reviews, admin verify/unpublish
+│   ├── manage.py              # GitHub OAuth + command delete (owner-only)
+│   └── forge.py               # Forge spec, generate, create-repo endpoints
 └── services/
     ├── github_service.py      # Clone, validate structure, parse manifest
     ├── security_review.py     # AI review using submitter's API key (BYOK)
+    ├── static_analysis.py     # AST analysis (syntax, methods, dangerous patterns)
+    ├── container_test.py      # Docker sandbox testing
+    ├── forge_generator.py     # AI package generation (BYOK, 6 models, system prompt from SDK)
+    ├── job_queue.py           # Async validation queue (clone → analyze → review → test → publish)
     └── submission_pipeline.py # Orchestrates: clone -> validate -> AI review -> publish
 ```
 
 ## Auth
 
-- **GitHub OAuth** — For authors (submissions, reviews)
-- **Household JWT** — For node installations (downloads, install tracking)
+- **GitHub OAuth** (`read:user,public_repo` scope) — For authors (submissions, reviews, Forge repo creation)
+- **IP rate limiting** — For public endpoints (browse, download)
 - **Admin key** — For verification/moderation (`X-Admin-Key` header)
 
 ## Endpoints
@@ -60,13 +66,17 @@ app/
 | GET | `/v1/commands` | — | Browse/search |
 | GET | `/v1/commands/{name}` | — | Detail + versions + reviews |
 | GET | `/v1/commands/{name}/versions` | — | Version history |
-| GET | `/v1/commands/{name}/download` | JWT | Clone URL + tag |
-| POST | `/v1/commands` | GitHub | Submit command (with BYOK AI review) |
-| GET | `/v1/submissions/{id}` | GitHub | Check submission status |
+| GET | `/v1/commands/{name}/download` | — | Clone URL + tag (increments install count) |
+| POST | `/v1/commands/quick-submit` | GitHub | Submit package (dry-run + confirm, BYOK AI review) |
+| GET | `/v1/submissions/{id}/status` | — | Check submission pipeline status |
 | GET | `/v1/commands/{name}/reviews` | — | List reviews |
 | POST | `/v1/commands/{name}/reviews` | GitHub | Submit/update review |
-| POST | `/v1/commands/{name}/installed` | JWT | Install counter |
+| DELETE | `/v1/commands/{name}` | GitHub | Delete package (owner-only) |
 | GET | `/v1/categories` | — | Category list |
+| GET | `/v1/forge/models` | — | Available LLM models + costs |
+| GET | `/v1/forge/spec` | — | Auto-generated SDK authoring spec |
+| POST | `/v1/forge/generate` | — | Generate package from description (BYOK) |
+| POST | `/v1/forge/create-repo` | GitHub | Create GitHub repo + push files |
 | POST | `/v1/admin/commands/{name}/verify` | Admin | Mark verified |
 | POST | `/v1/admin/commands/{name}/unpublish` | Admin | Unpublish |
 
@@ -75,10 +85,9 @@ app/
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | - | PostgreSQL connection |
-| `PANTRY_PORT` | 7720 | API port |
+| `PANTRY_PORT` | 7721 | API port |
 | `GITHUB_CLIENT_ID` | - | GitHub OAuth client ID |
 | `GITHUB_CLIENT_SECRET` | - | GitHub OAuth client secret |
-| `STORE_JWT_SECRET` | - | Shared secret for household JWT |
 | `ADMIN_API_KEY` | - | Admin endpoint protection |
 | `ALERT_WEBHOOK_URL` | - | Optional abuse alerting |
 

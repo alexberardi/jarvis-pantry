@@ -360,6 +360,7 @@ async def quick_submit(
             llm_provider=body.llm_provider,
             llm_api_key=body.llm_api_key,
             author_github=author.github_username,
+            repo_url=repo_url,
         )
         await validation_queue.enqueue(job)
 

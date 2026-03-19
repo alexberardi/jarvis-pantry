@@ -14,9 +14,6 @@ class Settings(BaseSettings):
     github_client_id: str = Field("", alias="GITHUB_CLIENT_ID")
     github_client_secret: str = Field("", alias="GITHUB_CLIENT_SECRET")
 
-    # Household JWT (same shared secret as jarvis-notifications-relay)
-    store_jwt_secret: str = Field("", alias="STORE_JWT_SECRET")
-
     # Abuse alerting
     alert_webhook_url: str = Field("", alias="ALERT_WEBHOOK_URL")
 

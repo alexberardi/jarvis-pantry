@@ -1,8 +1,7 @@
 """Authentication for the command store.
 
-Two auth modes:
-1. GitHub OAuth - for authors (submissions, reviews)
-2. Household JWT - for node installations (downloads, install tracking)
+GitHub OAuth for authors (submissions, reviews, package management).
+Public catalog endpoints (browse, detail, download) require no auth.
 """
 
 from __future__ import annotations
@@ -10,42 +9,11 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-import jwt
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import get_db
-
-
-def validate_household_jwt(
-    authorization: str = Header(..., alias="Authorization"),
-    x_household_id: str = Header(..., alias="X-Household-Id"),
-) -> str:
-    """Validate household JWT and return household_id.
-
-    Same pattern as jarvis-notifications-relay.
-    """
-    settings = get_settings()
-    if not settings.store_jwt_secret:
-        raise HTTPException(503, "Store JWT not configured")
-
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401, "Invalid authorization header")
-
-    token = authorization[7:]
-    try:
-        payload = jwt.decode(token, settings.store_jwt_secret, algorithms=["HS256"])
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(401, "Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(401, "Invalid token")
-
-    jwt_household = payload.get("household_id")
-    if jwt_household != x_household_id:
-        raise HTTPException(403, "Household ID mismatch")
-
-    return jwt_household
 
 
 async def exchange_github_code(code: str) -> dict[str, Any]:
@@ -135,18 +103,30 @@ def validate_github_token(
     github_id = user_data["id"]
     github_username = user_data["login"]
 
-    # Find or create author
+    # Find or create author — check by github_id first, then username fallback
+    # (handles migration from pre-OAuth records that have github_id=0)
     author = db.query(Author).filter(Author.github_id == github_id).first()
     if not author:
-        author = Author(
-            github_id=github_id,
-            github_username=github_username,
-            display_name=user_data.get("name") or github_username,
-            avatar_url=user_data.get("avatar_url"),
-        )
-        db.add(author)
-        db.commit()
-        db.refresh(author)
+        # Check if there's a record with matching username but github_id=0 (pre-OAuth)
+        author = db.query(Author).filter(
+            Author.github_username == github_username,
+        ).first()
+        if author and author.github_id == 0:
+            # Upgrade pre-OAuth record with real github_id
+            author.github_id = github_id
+            author.display_name = user_data.get("name") or github_username
+            author.avatar_url = user_data.get("avatar_url")
+            db.commit()
+        elif not author:
+            author = Author(
+                github_id=github_id,
+                github_username=github_username,
+                display_name=user_data.get("name") or github_username,
+                avatar_url=user_data.get("avatar_url"),
+            )
+            db.add(author)
+            db.commit()
+            db.refresh(author)
     elif author.github_username != github_username:
         # Username may have changed
         author.github_username = github_username
