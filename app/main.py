@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import browse, command_detail, download, forge, manage, submit, reviews
+from .api import browse, command_detail, download, forge, forge_drafts, manage, routines, submit, reviews
 from .config import get_settings
 from .services.job_queue import validation_queue
 
@@ -24,15 +24,21 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup/shutdown for the validation queue."""
+    """Startup/shutdown for the validation queue and background tasks."""
+    import asyncio
+
     settings = get_settings()
     await validation_queue.start(num_workers=settings.max_concurrent_container_tests)
 
     # Sweep stale temp dirs from crashed runs
     _cleanup_stale_repos()
 
+    # Background task: clean expired forge drafts every 5 minutes
+    draft_cleanup_task = asyncio.create_task(_draft_cleanup_loop())
+
     yield
 
+    draft_cleanup_task.cancel()
     await validation_queue.stop()
 
 
@@ -50,6 +56,27 @@ def _cleanup_stale_repos() -> None:
             pass
 
 
+async def _draft_cleanup_loop() -> None:
+    """Delete expired forge drafts every 5 minutes."""
+    import asyncio
+
+    from .api.forge_drafts import cleanup_expired_drafts
+    from .db import SessionLocal
+
+    while True:
+        await asyncio.sleep(300)
+        try:
+            db = SessionLocal()
+            try:
+                count = cleanup_expired_drafts(db)
+                if count:
+                    logger.info("Cleaned %d expired forge drafts", count)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("Draft cleanup error: %s", e)
+
+
 app = FastAPI(
     title="Jarvis Pantry",
     version="0.1.0",
@@ -61,7 +88,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -73,6 +100,8 @@ app.include_router(submit.router, tags=["submission"])
 app.include_router(reviews.router, tags=["reviews"])
 app.include_router(manage.router, tags=["auth", "management"])
 app.include_router(forge.router, tags=["forge"])
+app.include_router(forge_drafts.router, tags=["forge"])
+app.include_router(routines.router, tags=["routines"])
 
 
 @app.get("/health")

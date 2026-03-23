@@ -149,6 +149,25 @@ class Review(Base):
     author = relationship("Author", back_populates="reviews")
 
 
+class ForgeDraft(Base):
+    """Temporary draft from the Forge AI builder, addressable by share code.
+
+    Share codes expire after 15 minutes but are refreshed on each new
+    Forge message. Used for test-installing packages to nodes before publishing.
+    """
+    __tablename__ = "forge_drafts"
+
+    id = Column(Integer, primary_key=True)
+    share_code = Column(String(6), unique=True, nullable=False, index=True)
+    session_id = Column(String(36), nullable=False, index=True)
+    package_name = Column(String(255), nullable=False)
+    display_name = Column(String(255), nullable=True)
+    files_json = Column(JSON, nullable=False)  # [{filename, content, language}]
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=_utcnow)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 class Submission(Base):
     __tablename__ = "submissions"
 
