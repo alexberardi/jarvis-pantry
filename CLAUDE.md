@@ -160,12 +160,14 @@ The static analysis pipeline warns on this:
 | `agent` | `IJarvisAgent` | `agents/custom_agents/{name}/` |
 | `device_protocol` | `IJarvisDeviceProtocol` | `device_families/custom_families/{name}/` |
 | `device_manager` | `IJarvisDeviceManager` | `device_managers/custom_managers/{name}/` |
+| `routine` | JSON (routine.json) | `routines/custom_routines/{name}/` |
 
 ### Component inference
 
 When `components` is not declared in the manifest, the pipeline infers from repo
 directory structure: `commands/*/command.py`, `agents/*/agent.py`,
-`device_families/*/protocol.py`, `device_managers/*/manager.py`, or `command.py` at root.
+`device_families/*/protocol.py`, `device_managers/*/manager.py`, `command.py` at root,
+`routines/*/routine.json`, or `routine.json` at root.
 
 ### DB model
 
@@ -186,6 +188,7 @@ Per-component type checking:
 | `agent` | `IJarvisAgent` | `name`, `description`, `schedule`, `required_secrets`, `run`, `get_context_data` |
 | `device_protocol` | `IJarvisDeviceProtocol` | `protocol_name`, `supported_domains`, `discover`, `control`, `get_state` |
 | `device_manager` | `IJarvisDeviceManager` | `name`, `friendly_name`, `description`, `collect_devices` |
+| `routine` | JSON schema | `trigger_phrases`, `steps`, `response_instruction` |
 
 Also flags: dangerous imports, raw DB access, SQL mutations, cross-command data access, shared dir name collisions.
 
