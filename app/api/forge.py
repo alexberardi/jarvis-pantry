@@ -32,7 +32,7 @@ class ForgeGenerateRequest(BaseModel):
 @router.get("/v1/forge/models")
 def get_forge_models():
     """Return available models with estimated per-generation costs."""
-    from ..services.forge_generator import get_available_models
+    from ..services.llm_client import get_available_models
     return {"models": get_available_models()}
 
 

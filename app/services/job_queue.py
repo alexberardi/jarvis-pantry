@@ -187,7 +187,7 @@ class ValidationQueue:
                 command = existing
                 command.description = job.manifest.get("description", command.description)
                 command.display_name = job.manifest.get("display_name", command.display_name)
-                command.github_repo_url = job.repo_url or f"https://github.com/{job.author_github}/{command_name}"
+                command.github_repo_url = job.repo_url
                 command.categories = job.manifest.get("categories", [])
                 command.platforms = job.manifest.get("platforms", [])
                 command.license = job.manifest.get("license")
@@ -215,7 +215,7 @@ class ValidationQueue:
                     command_name=command_name,
                     display_name=job.manifest.get("display_name", command_name),
                     description=job.manifest.get("description", ""),
-                    github_repo_url=job.repo_url or f"https://github.com/{job.author_github}/{command_name}",
+                    github_repo_url=job.repo_url,
                     author_id=author.id,
                     latest_version=version,
                     categories=job.manifest.get("categories", []),
@@ -252,7 +252,7 @@ class ValidationQueue:
                 cmd_version = CommandVersion(
                     command_id=command.id,
                     version=version,
-                    git_tag=f"v{version}",
+                    git_tag=None,
                     manifest_json=job.manifest,
                     danger_rating=danger_rating,
                     security_report_id=report.id if review else None,

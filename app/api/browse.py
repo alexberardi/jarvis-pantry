@@ -14,6 +14,7 @@ router = APIRouter()
 def list_commands(
     q: str | None = Query(None, description="Search query"),
     category: str | None = Query(None, description="Filter by category"),
+    type: str | None = Query(None, description="Filter by package type: command, bundle, routine"),
     sort: str = Query("popular", description="Sort: popular, newest, name"),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
@@ -21,6 +22,10 @@ def list_commands(
 ):
     """Browse/search published commands."""
     query = db.query(Command).filter(Command.published.is_(True))
+
+    # Package type filter
+    if type:
+        query = query.filter(Command.package_type == type)
 
     # Search
     if q:

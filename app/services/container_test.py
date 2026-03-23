@@ -136,6 +136,30 @@ def _check_docker_available() -> bool:
         return False
 
 
+def _is_routine_only(command_dir: Path) -> bool:
+    """Check if a package contains only routine components (no Python code)."""
+    import yaml
+    for name in ("jarvis_package.yaml", "jarvis_command.yaml"):
+        manifest_path = command_dir / name
+        if manifest_path.exists():
+            try:
+                with open(manifest_path) as f:
+                    manifest = yaml.safe_load(f)
+                components = manifest.get("components", [])
+                if not components:
+                    # Inferred — check for routine.json at root or in routines/
+                    has_routine = (command_dir / "routine.json").exists()
+                    has_code = any(
+                        (command_dir / f).exists()
+                        for f in ("command.py", "agent.py", "protocol.py", "manager.py")
+                    )
+                    return has_routine and not has_code
+                return all(c.get("type") == "routine" for c in components)
+            except Exception:
+                return False
+    return False
+
+
 async def run_container_tests(
     command_dir: Path,
     submission_id: int,
@@ -152,6 +176,17 @@ async def run_container_tests(
     Returns:
         ContainerTestResult with test outcomes.
     """
+    # Skip container tests for routine-only packages (pure JSON, no code to sandbox)
+    if _is_routine_only(command_dir):
+        logger.info("Routine-only package, skipping container tests")
+        return ContainerTestResult(
+            passed=True,
+            summary="SKIP - routine package (no code)",
+            test_count=0,
+            pass_count=0,
+            fail_count=0,
+        )
+
     if not await asyncio.to_thread(_check_docker_available):
         logger.warning("Docker not available, skipping container tests")
         return ContainerTestResult(

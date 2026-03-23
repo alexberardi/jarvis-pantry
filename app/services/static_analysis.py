@@ -51,12 +51,17 @@ REQUIRED_DEVICE_MANAGER_METHODS: list[str] = [
     "name", "friendly_name", "description", "collect_devices",
 ]
 
+REQUIRED_PROMPT_PROVIDER_METHODS: list[str] = [
+    "name", "build_system_prompt", "get_capabilities",
+]
+
 # Map component type → (base class name, required methods)
 COMPONENT_TYPE_INFO: dict[str, tuple[str, list[str]]] = {
     "command": ("IJarvisCommand", REQUIRED_COMMAND_METHODS),
     "agent": ("IJarvisAgent", REQUIRED_AGENT_METHODS),
     "device_protocol": ("IJarvisDeviceProtocol", REQUIRED_PROTOCOL_METHODS),
     "device_manager": ("IJarvisDeviceManager", REQUIRED_DEVICE_MANAGER_METHODS),
+    "prompt_provider": ("IJarvisPromptProvider", REQUIRED_PROMPT_PROVIDER_METHODS),
 }
 
 DANGEROUS_MODULES: set[str] = {"subprocess", "os", "shutil", "ctypes", "importlib"}
@@ -171,6 +176,31 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
         if not source_path.exists():
             result.passed = False
             result.errors.append(f"Component '{comp_name}': {comp_path} not found")
+            continue
+
+        # Routine components are JSON — validate structure, skip Python analysis
+        if comp_type == "routine":
+            import json
+            try:
+                with open(source_path) as f:
+                    routine_data = json.load(f)
+                if not routine_data.get("trigger_phrases"):
+                    result.warnings.append(f"Routine '{comp_name}': missing trigger_phrases")
+                if not routine_data.get("steps"):
+                    result.errors.append(f"Routine '{comp_name}': missing steps")
+                    result.passed = False
+                if not routine_data.get("response_instruction"):
+                    result.warnings.append(f"Routine '{comp_name}': missing response_instruction")
+                for i, step in enumerate(routine_data.get("steps", [])):
+                    if not step.get("command"):
+                        result.errors.append(f"Routine '{comp_name}': step {i+1} missing 'command'")
+                        result.passed = False
+            except json.JSONDecodeError as e:
+                result.passed = False
+                result.errors.append(f"Routine '{comp_name}': invalid JSON: {e}")
+            except Exception as e:
+                result.passed = False
+                result.errors.append(f"Routine '{comp_name}': failed to read: {e}")
             continue
 
         source = source_path.read_text(encoding="utf-8")

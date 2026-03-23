@@ -87,7 +87,8 @@ def validate_structure(repo_dir: Path) -> dict[str, Any]:
             raise RepoValidationError(
                 "No components found. Declare 'components' in the manifest or use "
                 "the convention: command.py, commands/*/command.py, agents/*/agent.py, "
-                "device_families/*/protocol.py, device_managers/*/manager.py"
+                "device_families/*/protocol.py, device_managers/*/manager.py, "
+                "routines/*/routine.json"
             )
         manifest["components"] = components
 
@@ -117,6 +118,8 @@ def _infer_components_from_structure(repo_dir: Path, manifest_name: str) -> list
         "agents": ("agent", "agent.py"),
         "device_families": ("device_protocol", "protocol.py"),
         "device_managers": ("device_manager", "manager.py"),
+        "prompt_providers": ("prompt_provider", "provider.py"),
+        "routines": ("routine", "routine.json"),
     }
 
     components: list[dict[str, str]] = []
@@ -124,6 +127,10 @@ def _infer_components_from_structure(repo_dir: Path, manifest_name: str) -> list
     # Root-level command.py
     if (repo_dir / "command.py").exists():
         components.append({"type": "command", "name": manifest_name, "path": "command.py"})
+
+    # Root-level routine.json
+    if (repo_dir / "routine.json").exists():
+        components.append({"type": "routine", "name": manifest_name, "path": "routine.json"})
 
     # Convention directories
     for dir_name, (comp_type, entry_filename) in dir_types.items():
