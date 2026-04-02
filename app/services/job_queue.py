@@ -111,6 +111,9 @@ class ValidationQueue:
             components = job.manifest.get("components", [])
             is_bundle = len(components) > 1 or (
                 len(components) == 1 and components[0].get("type") != "command"
+            ) or (
+                # Convention layout (commands/*/command.py) needs bundle treatment
+                len(components) == 1 and "/" in components[0].get("path", "")
             )
             package_type = "bundle" if is_bundle else "command"
 
