@@ -6,9 +6,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
 
-# Install SDK
-COPY jarvis-command-sdk/ /tmp/jarvis-command-sdk/
-RUN pip install --no-cache-dir /tmp/jarvis-command-sdk/ && rm -rf /tmp/jarvis-command-sdk/
+# Install SDK from GitHub
+RUN pip install --no-cache-dir git+https://github.com/alexberardi/jarvis-command-sdk.git@main
 
 # Install dependencies
 COPY pyproject.toml .
