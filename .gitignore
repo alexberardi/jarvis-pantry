@@ -8,3 +8,4 @@ build/
 .coverage
 .env
 !.env.example
+jarvis-command-sdk/

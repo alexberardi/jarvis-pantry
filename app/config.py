@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     max_concurrent_clones: int = Field(5, alias="MAX_CONCURRENT_CLONES")
     sdk_path: str = Field("/app/jarvis-command-sdk", alias="JARVIS_SDK_PATH")
     container_test_timeout: int = Field(180, alias="CONTAINER_TEST_TIMEOUT")
-    require_llm_key: bool = Field(True, alias="REQUIRE_LLM_KEY")
+    bypass_llm_key: bool = Field(False, alias="BYPASS_LLM_KEY")
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -282,8 +282,8 @@ async def quick_submit(
     if not repo_url.startswith("https://github.com/"):
         raise HTTPException(400, "repo_url must be a public GitHub HTTPS URL")
 
-    # Enforce LLM key in prod
-    if settings.require_llm_key and not body.llm_api_key:
+    # Enforce LLM key unless explicitly bypassed (dev mode)
+    if not settings.bypass_llm_key and not body.llm_api_key:
         raise HTTPException(400, "llm_api_key is required. Provide your Claude or OpenAI API key for security review.")
 
     if body.llm_api_key and body.llm_provider not in ("claude", "openai"):

@@ -60,9 +60,11 @@ async def generate_package(body: ForgeGenerateRequest):
 
     BYOK — the user provides their own LLM API key. Used once, never stored.
     """
+    from ..config import get_settings
+
     if not body.description.strip():
         raise HTTPException(400, "Description is required")
-    if not body.llm_api_key.strip():
+    if not get_settings().bypass_llm_key and not body.llm_api_key.strip():
         raise HTTPException(400, "API key is required")
 
     from ..services.forge_generator import generate_package as do_generate

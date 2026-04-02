@@ -179,10 +179,10 @@ class TestQuickSubmit:
     @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
     @patch("app.api.submit.get_settings")
     def test_requires_llm_key_by_default(self, mock_settings, mock_verify, client, seed_data):
-        """When REQUIRE_LLM_KEY=true (default), 400 if no key."""
+        """When BYPASS_LLM_KEY=false (default), 400 if no key."""
         _setup_quick_submit_auth(seed_data)
         settings = mock_settings.return_value
-        settings.require_llm_key = True
+        settings.bypass_llm_key = False
         settings.submission_rate_limit_per_hour = 100
         settings.max_concurrent_clones = 5
 
@@ -200,7 +200,7 @@ class TestQuickSubmit:
         """With confirm=false (default), returns preview without enqueuing."""
         _setup_quick_submit_auth(seed_data)
         settings = mock_settings.return_value
-        settings.require_llm_key = False
+        settings.bypass_llm_key = True
         settings.submission_rate_limit_per_hour = 100
         settings.max_concurrent_clones = 5
 
@@ -226,7 +226,7 @@ class TestQuickSubmit:
         """With confirm=true, enqueues for processing."""
         _setup_quick_submit_auth(seed_data)
         settings = mock_settings.return_value
-        settings.require_llm_key = False
+        settings.bypass_llm_key = True
         settings.submission_rate_limit_per_hour = 100
         settings.max_concurrent_clones = 5
 
@@ -252,7 +252,7 @@ class TestQuickSubmit:
         """Preview with API key returns cost estimate."""
         _setup_quick_submit_auth(seed_data)
         settings = mock_settings.return_value
-        settings.require_llm_key = False
+        settings.bypass_llm_key = True
         settings.submission_rate_limit_per_hour = 100
         settings.max_concurrent_clones = 5
 
@@ -278,7 +278,7 @@ class TestQuickSubmit:
     def test_missing_files(self, mock_clone, mock_settings, mock_verify, client, seed_data, tmp_path):
         _setup_quick_submit_auth(seed_data)
         settings = mock_settings.return_value
-        settings.require_llm_key = False
+        settings.bypass_llm_key = True
         settings.submission_rate_limit_per_hour = 100
         settings.max_concurrent_clones = 5
 
@@ -301,7 +301,7 @@ class TestQuickSubmit:
         """Command with syntax error fails static analysis."""
         _setup_quick_submit_auth(seed_data)
         settings = mock_settings.return_value
-        settings.require_llm_key = False
+        settings.bypass_llm_key = True
         settings.submission_rate_limit_per_hour = 100
         settings.max_concurrent_clones = 5
 
@@ -328,7 +328,7 @@ class TestQuickSubmit:
     def test_repo_access_denied(self, mock_settings, mock_verify, client, seed_data):
         """Submitting a repo you don't own returns 403."""
         settings = mock_settings.return_value
-        settings.require_llm_key = False
+        settings.bypass_llm_key = True
         settings.submission_rate_limit_per_hour = 100
         settings.max_concurrent_clones = 5
 
