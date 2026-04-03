@@ -322,6 +322,8 @@ def _get_class_defined_names(cls: ast.ClassDef) -> set[str]:
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     names.add(target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
     return names
 
 
