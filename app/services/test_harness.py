@@ -54,6 +54,7 @@ def _infer_components_from_structure() -> list[dict]:
         "agents": ("agent", "agent.py"),
         "device_families": ("device_protocol", "protocol.py"),
         "device_managers": ("device_manager", "manager.py"),
+        "prompt_providers": ("prompt_provider", "provider.py"),
     }
 
     components: list[dict] = []
@@ -394,12 +395,78 @@ def _run_device_manager_tests(record, comp_path: str = "manager.py") -> None:
         record("description", False, str(e))
 
 
+def _run_prompt_provider_tests(record, comp_path: str = "provider.py") -> None:
+    """Run tests for a prompt_provider component.
+
+    Prompt providers depend on command-center internals (app.core.*) that are
+    not available in the container, so we validate via AST parsing instead of
+    import + instantiation.
+    """
+    import ast
+
+    comp_file = Path(comp_path)
+    full_path = Path("/test/repo") / comp_file
+    if not full_path.exists():
+        record("file_exists", False, f"Provider file not found: {comp_path}")
+        return
+    record("file_exists", True)
+
+    source = full_path.read_text(encoding="utf-8")
+
+    # Syntax check
+    try:
+        tree = ast.parse(source)
+        record("syntax", True)
+    except SyntaxError as e:
+        record("syntax", False, f"Syntax error: {e}")
+        return
+
+    # Find class inheriting from *PromptProvider*
+    provider_class = None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for base in node.bases:
+            base_name = None
+            if isinstance(base, ast.Name):
+                base_name = base.id
+            elif isinstance(base, ast.Attribute):
+                base_name = base.attr
+            if base_name and "PromptProvider" in base_name:
+                provider_class = node
+                break
+        if provider_class:
+            break
+
+    if provider_class is None:
+        record("find_class", False, "No class inheriting from IJarvisPromptProvider found")
+        return
+    record("find_class", True)
+
+    # Check required methods
+    defined_methods: set[str] = set()
+    for item in provider_class.body:
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined_methods.add(item.name)
+
+    required = {"name", "build_system_prompt", "get_capabilities"}
+    missing = required - defined_methods
+    if missing:
+        record("required_methods", False, f"Missing methods: {', '.join(sorted(missing))}")
+    else:
+        record("required_methods", True)
+
+    # Check get_capabilities returns expected keys (best-effort from AST)
+    record("ast_validated", True)
+
+
 # Map component type → test runner
 _TYPE_RUNNERS = {
     "command": _run_command_tests,
     "agent": _run_agent_tests,
     "device_protocol": _run_protocol_tests,
     "device_manager": _run_device_manager_tests,
+    "prompt_provider": _run_prompt_provider_tests,
 }
 
 

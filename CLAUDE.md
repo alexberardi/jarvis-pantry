@@ -161,13 +161,14 @@ The static analysis pipeline warns on this:
 | `device_protocol` | `IJarvisDeviceProtocol` | `device_families/custom_families/{name}/` |
 | `device_manager` | `IJarvisDeviceManager` | `device_managers/custom_managers/{name}/` |
 | `routine` | JSON (routine.json) | `routines/custom_routines/{name}/` |
+| `prompt_provider` | `IJarvisPromptProvider` | CC: `prompt_providers/{tier}/custom/{name}/` |
 
 ### Component inference
 
 When `components` is not declared in the manifest, the pipeline infers from repo
 directory structure: `commands/*/command.py`, `agents/*/agent.py`,
-`device_families/*/protocol.py`, `device_managers/*/manager.py`, `command.py` at root,
-`routines/*/routine.json`, or `routine.json` at root.
+`device_families/*/protocol.py`, `device_managers/*/manager.py`, `prompt_providers/*/provider.py`,
+`command.py` at root, `routines/*/routine.json`, or `routine.json` at root.
 
 ### DB model
 
