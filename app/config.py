@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # Rate limiting
     rate_limit_per_ip_per_hour: int = Field(100, alias="RATE_LIMIT_PER_IP_PER_HOUR")
     submission_rate_limit_per_hour: int = Field(10, alias="SUBMISSION_RATE_LIMIT_PER_HOUR")
+    submission_rate_limit_per_user_per_hour: int = Field(
+        15, alias="SUBMISSION_RATE_LIMIT_PER_USER_PER_HOUR",
+    )
 
     # Validation pipeline
     max_concurrent_container_tests: int = Field(3, alias="MAX_CONCURRENT_CONTAINER_TESTS")

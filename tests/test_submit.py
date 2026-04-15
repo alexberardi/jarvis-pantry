@@ -184,6 +184,7 @@ class TestQuickSubmit:
         settings = mock_settings.return_value
         settings.bypass_llm_key = False
         settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
 
         resp = client.post("/v1/commands/quick-submit", json={
@@ -202,6 +203,7 @@ class TestQuickSubmit:
         settings = mock_settings.return_value
         settings.bypass_llm_key = True
         settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
 
         repo = _make_fake_repo(tmp_path)
@@ -228,6 +230,7 @@ class TestQuickSubmit:
         settings = mock_settings.return_value
         settings.bypass_llm_key = True
         settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
 
         repo = _make_fake_repo(tmp_path)
@@ -254,6 +257,7 @@ class TestQuickSubmit:
         settings = mock_settings.return_value
         settings.bypass_llm_key = True
         settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
 
         repo = _make_fake_repo(tmp_path)
@@ -280,6 +284,7 @@ class TestQuickSubmit:
         settings = mock_settings.return_value
         settings.bypass_llm_key = True
         settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
 
         repo = tmp_path / "repo"
@@ -303,6 +308,7 @@ class TestQuickSubmit:
         settings = mock_settings.return_value
         settings.bypass_llm_key = True
         settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
 
         repo = tmp_path / "repo"
@@ -323,6 +329,40 @@ class TestQuickSubmit:
         assert any("SyntaxError" in e for e in detail["errors"])
         _teardown_quick_submit_auth()
 
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.validation_queue")
+    def test_per_user_rate_limit(self, mock_queue, mock_clone, mock_settings, mock_verify, client, seed_data, db_session, tmp_path):
+        """Per-user limit counts confirmed submissions in the last hour."""
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 3
+        settings.max_concurrent_clones = 5
+
+        # Seed the author to exactly the per-user limit.
+        for _ in range(3):
+            db_session.add(Submission(
+                github_repo_url="https://github.com/test/prior",
+                author_id=seed_data["author"].id,
+                status="published",
+            ))
+        db_session.commit()
+
+        repo = _make_fake_repo(tmp_path)
+        mock_clone.return_value = repo
+        mock_queue.enqueue = AsyncMock()
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            "confirm": True,
+        })
+        assert resp.status_code == 429
+        assert "per hour" in resp.json()["detail"]
+        _teardown_quick_submit_auth()
+
     @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, side_effect=RepoValidationError("You don't have push access"))
     @patch("app.api.submit.get_settings")
     def test_repo_access_denied(self, mock_settings, mock_verify, client, seed_data):
@@ -330,6 +370,7 @@ class TestQuickSubmit:
         settings = mock_settings.return_value
         settings.bypass_llm_key = True
         settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
 
         _setup_quick_submit_auth(seed_data)

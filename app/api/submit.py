@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -339,7 +339,22 @@ async def quick_submit(
                 "cost_estimate": cost_estimate,
             }
 
-        # 5. Author comes from GitHub OAuth (already validated)
+        # 5. Per-user rate limit. Counts confirmed submissions in the last hour
+        # from the submissions table; previews (confirm=false) are free. DB-backed
+        # so it's consistent across Fly machines and survives restarts.
+        user_limit = settings.submission_rate_limit_per_user_per_hour
+        recent_count = db.query(Submission).filter(
+            Submission.author_id == author.id,
+            Submission.submitted_at > datetime.now(timezone.utc) - timedelta(hours=1),
+        ).count()
+        if recent_count >= user_limit:
+            cleanup_repo(repo_dir)
+            raise HTTPException(
+                429,
+                f"Rate limit exceeded: {user_limit} submissions per hour per user. "
+                "Please try again later.",
+            )
+
         # 6. Create submission record
         submission = Submission(
             github_repo_url=repo_url,
