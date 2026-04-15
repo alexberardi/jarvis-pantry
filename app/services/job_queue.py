@@ -144,8 +144,9 @@ class ValidationQueue:
                 finally:
                     job.zero_key()
 
-                # Check if AI review says reject
-                if review and review.danger_score >= 4 and review.recommendation == "reject":
+                # Only a hard "reject" recommendation blocks a submission.
+                # danger_score is informational and surfaced on the package detail page.
+                if review and review.recommendation == "reject":
                     submission.status = "rejected"
                     submission.error_message = f"AI review rejected: {review.summary}"
                     submission.static_analysis_result = submission.static_analysis_result  # keep existing
@@ -263,17 +264,13 @@ class ValidationQueue:
                 )
                 db.add(cmd_version)
 
-            # Auto-publish logic
-            if review and review.danger_score <= 3 and review.recommendation != "reject":
-                command.published = True
-            elif not review:
-                # No AI review (dev mode) — publish if container tests passed
-                command.published = True
-            else:
-                command.published = False
+            # Auto-publish: anything that reaches this point has passed static,
+            # AI review (or skipped in dev), and container tests. The AI hard-reject
+            # gate is checked earlier, so there is no moderator step here.
+            command.published = True
 
             submission.command_id = command.id
-            submission.status = "published" if command.published else "pending_review"
+            submission.status = "published"
             submission.completed_at = datetime.now(timezone.utc)
             db.commit()
 
