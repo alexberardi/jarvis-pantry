@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from ..db import SessionLocal
 from ..models import Command, CommandVersion, SecurityReport, Submission
-from .container_test import run_container_tests
+from .container_runner import get_runner
 from .github_service import cleanup_repo, read_component_sources
 from .security_review import SecurityReviewResult, format_bundle_source, run_security_review
 
@@ -162,11 +162,12 @@ class ValidationQueue:
             submission.status = "container_test"
             db.commit()
 
-            container_result = await run_container_tests(
+            container_result = await get_runner().run(
                 command_dir=job.repo_dir,
                 submission_id=job.submission_id,
                 packages=[p["name"] for p in job.manifest.get("packages", []) if isinstance(p, dict)],
                 is_bundle=is_bundle,
+                repo_url=job.repo_url,
             )
 
             submission.container_test_result = container_result.to_dict()

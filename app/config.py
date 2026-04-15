@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     sdk_path: str = Field("/app/jarvis-command-sdk", alias="JARVIS_SDK_PATH")
     container_test_timeout: int = Field(180, alias="CONTAINER_TEST_TIMEOUT")
     bypass_llm_key: bool = Field(False, alias="BYPASS_LLM_KEY")
+    container_runner: str = Field("local", alias="PANTRY_CONTAINER_RUNNER")  # "local" or "github_actions"
 
     model_config = SettingsConfigDict(
         env_file=".env",
