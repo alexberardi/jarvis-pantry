@@ -380,3 +380,93 @@ class TestQuickSubmit:
         assert resp.status_code == 403
         assert "push access" in resp.json()["detail"]
         _teardown_quick_submit_auth()
+
+
+class TestContainerResultCallback:
+    """Callback endpoint used by out-of-process container test runners."""
+
+    def _seed_awaiting(self, db_session, seed_data, *, token="tok-abc"):
+        sub = Submission(
+            github_repo_url="https://github.com/test/jarvis-command-widget",
+            author_id=seed_data["author"].id,
+            status="awaiting_container",
+            llm_provider=None,
+            callback_token=token,
+            external_run_url="https://github.com/x/y/actions/runs/1",
+            dispatch_context={
+                "manifest": {
+                    "name": "widget",
+                    "display_name": "Widget",
+                    "description": "Does widget things",
+                    "version": "1.0.0",
+                    "categories": ["utility"],
+                    "platforms": ["linux"],
+                    "license": "MIT",
+                    "components": [{"name": "widget", "type": "command", "path": "command.py"}],
+                },
+                "review": None,
+                "author_github": "testuser",
+                "repo_url": "https://github.com/test/jarvis-command-widget",
+            },
+        )
+        db_session.add(sub)
+        db_session.commit()
+        db_session.refresh(sub)
+        return sub
+
+    def test_publishes_on_pass(self, client, seed_data, db_session):
+        sub = self._seed_awaiting(db_session, seed_data)
+
+        resp = client.post(
+            f"/v1/submissions/{sub.id}/container-result",
+            headers={"X-Pantry-Token": "tok-abc"},
+            json={"passed": True, "summary": "2/2 passed", "test_count": 2, "pass_count": 2},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "published"
+
+        db_session.expire_all()
+        updated = db_session.query(Submission).filter(Submission.id == sub.id).first()
+        assert updated is not None
+        assert updated.status == "published"
+        assert updated.callback_token is None  # single-use
+        assert updated.command_id is not None
+
+    def test_rejects_on_fail(self, client, seed_data, db_session):
+        sub = self._seed_awaiting(db_session, seed_data)
+
+        resp = client.post(
+            f"/v1/submissions/{sub.id}/container-result",
+            headers={"X-Pantry-Token": "tok-abc"},
+            json={"passed": False, "summary": "1/2 failed", "test_count": 2, "pass_count": 1, "fail_count": 1, "errors": ["AssertionError: expected 3"]},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "rejected"
+
+    def test_rejects_bad_token(self, client, seed_data, db_session):
+        sub = self._seed_awaiting(db_session, seed_data)
+
+        resp = client.post(
+            f"/v1/submissions/{sub.id}/container-result",
+            headers={"X-Pantry-Token": "wrong"},
+            json={"passed": True, "summary": "ok"},
+        )
+        assert resp.status_code == 401
+
+    def test_wrong_status(self, client, seed_data, db_session):
+        sub = Submission(
+            github_repo_url="https://github.com/test/jarvis-command-widget",
+            author_id=seed_data["author"].id,
+            status="published",
+            callback_token="tok-abc",
+        )
+        db_session.add(sub)
+        db_session.commit()
+        db_session.refresh(sub)
+
+        resp = client.post(
+            f"/v1/submissions/{sub.id}/container-result",
+            headers={"X-Pantry-Token": "tok-abc"},
+            json={"passed": True, "summary": "ok"},
+        )
+        assert resp.status_code == 409

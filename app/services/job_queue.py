@@ -18,8 +18,9 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..db import SessionLocal
-from ..models import Command, CommandVersion, SecurityReport, Submission
+from ..models import Submission
 from .container_runner import get_runner
+from .finalize import build_dispatch_context, finalize_submission
 from .github_service import cleanup_repo, read_component_sources
 from .security_review import SecurityReviewResult, format_bundle_source, run_security_review
 
@@ -158,11 +159,11 @@ class ValidationQueue:
                 submission.status = "container_test"
                 db.commit()
 
-            # Stage 2: Container test
+            # Stage 2: Container test — dispatch to configured runner.
             submission.status = "container_test"
             db.commit()
 
-            container_result = await get_runner().run(
+            dispatch = await get_runner().dispatch(
                 command_dir=job.repo_dir,
                 submission_id=job.submission_id,
                 packages=[p["name"] for p in job.manifest.get("packages", []) if isinstance(p, dict)],
@@ -170,114 +171,35 @@ class ValidationQueue:
                 repo_url=job.repo_url,
             )
 
-            submission.container_test_result = container_result.to_dict()
-            db.commit()
-
-            if not container_result.passed and container_result.summary != "SKIP - Docker not available" and container_result.summary != "SKIP - SDK not available":
-                submission.status = "rejected"
-                error_detail = container_result.summary
-                if container_result.errors:
-                    error_detail += " | " + "; ".join(container_result.errors[:3])
-                submission.error_message = f"Container tests failed: {error_detail}"
-                submission.completed_at = datetime.now(timezone.utc)
+            if dispatch.pending:
+                # Out-of-process runner (e.g. GitHub Actions). Stash everything
+                # finalize_submission needs and wait for the callback endpoint.
+                submission.status = "awaiting_container"
+                submission.external_run_url = dispatch.external_run_url
+                submission.callback_token = dispatch.callback_token
+                submission.dispatch_context = build_dispatch_context(
+                    manifest=job.manifest,
+                    review=review,
+                    author_github=job.author_github,
+                    repo_url=job.repo_url,
+                )
                 db.commit()
+                logger.info(
+                    "Submission %d awaiting container callback (%s)",
+                    job.submission_id, dispatch.external_run_url,
+                )
                 return
 
-            # Stage 3: Publish
-            existing = db.query(Command).filter(Command.command_name == command_name).first()
-
-            danger_rating = review.danger_score if review else None
-
-            if existing:
-                command = existing
-                command.description = job.manifest.get("description", command.description)
-                command.display_name = job.manifest.get("display_name", command.display_name)
-                command.github_repo_url = job.repo_url
-                command.categories = job.manifest.get("categories", [])
-                command.platforms = job.manifest.get("platforms", [])
-                command.license = job.manifest.get("license")
-                command.latest_version = version
-                command.package_type = package_type
-                command.components = components if components else None
-                if danger_rating is not None:
-                    command.danger_rating = danger_rating
-            else:
-                # Find author
-                from ..models import Author
-                author = db.query(Author).filter(
-                    Author.github_username == job.author_github,
-                ).first()
-                if not author:
-                    author = Author(
-                        github_id=0,
-                        github_username=job.author_github,
-                        display_name=job.author_github,
-                    )
-                    db.add(author)
-                    db.flush()
-
-                command = Command(
-                    command_name=command_name,
-                    display_name=job.manifest.get("display_name", command_name),
-                    description=job.manifest.get("description", ""),
-                    github_repo_url=job.repo_url,
-                    author_id=author.id,
-                    latest_version=version,
-                    categories=job.manifest.get("categories", []),
-                    platforms=job.manifest.get("platforms", []),
-                    license=job.manifest.get("license", "MIT"),
-                    danger_rating=danger_rating,
-                    package_type=package_type,
-                    components=components if components else None,
-                )
-                db.add(command)
-                db.flush()
-
-            # Security report (if review happened)
-            if review:
-                report = SecurityReport(
-                    command_id=command.id,
-                    version=version,
-                    ai_review_summary=review.summary,
-                    ai_danger_score=review.danger_score,
-                    ai_concerns=review.concerns,
-                    ai_recommendation=review.recommendation,
-                    overall_danger_rating=review.danger_score,
-                    raw_ai_response=review.raw_response,
-                )
-                db.add(report)
-                db.flush()
-
-            # Command version
-            existing_ver = db.query(CommandVersion).filter(
-                CommandVersion.command_id == command.id,
-                CommandVersion.version == version,
-            ).first()
-            if not existing_ver:
-                cmd_version = CommandVersion(
-                    command_id=command.id,
-                    version=version,
-                    git_tag=None,
-                    manifest_json=job.manifest,
-                    danger_rating=danger_rating,
-                    security_report_id=report.id if review else None,
-                    min_jarvis_version=job.manifest.get("min_jarvis_version", "0.9.0"),
-                )
-                db.add(cmd_version)
-
-            # Auto-publish: anything that reaches this point has passed static,
-            # AI review (or skipped in dev), and container tests. The AI hard-reject
-            # gate is checked earlier, so there is no moderator step here.
-            command.published = True
-
-            submission.command_id = command.id
-            submission.status = "published"
-            submission.completed_at = datetime.now(timezone.utc)
-            db.commit()
-
-            logger.info(
-                "Submission %d completed: %s (status=%s)",
-                job.submission_id, command_name, submission.status,
+            # Synchronous runner — finalize now.
+            assert dispatch.result is not None
+            finalize_submission(
+                db=db,
+                submission=submission,
+                manifest=job.manifest,
+                review=review,
+                author_github=job.author_github,
+                repo_url=job.repo_url,
+                container_result=dispatch.result,
             )
 
         except Exception as e:

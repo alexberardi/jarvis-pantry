@@ -175,10 +175,16 @@ class Submission(Base):
     command_id = Column(Integer, ForeignKey("commands.id"), nullable=True)
     github_repo_url = Column(String(512), nullable=False)
     author_id = Column(Integer, ForeignKey("authors.id"), nullable=False)
-    status = Column(String(50), default="pending")  # pending, static_analysis, ai_review, container_test, published, rejected
+    status = Column(String(50), default="pending")  # pending, static_analysis, ai_review, container_test, awaiting_container, published, rejected
     error_message = Column(Text)
     static_analysis_result = Column(JSON, nullable=True)
     container_test_result = Column(JSON, nullable=True)
     llm_provider = Column(String(20), nullable=True)
     submitted_at = Column(DateTime(timezone=True), default=_utcnow)
     completed_at = Column(DateTime(timezone=True))
+    # Async container-test dispatch: set when a runner kicks off an external test
+    # (e.g. GitHub Actions). Callback uses callback_token to authenticate and
+    # finalize the submission using dispatch_context.
+    external_run_url = Column(String(512), nullable=True)
+    callback_token = Column(String(64), nullable=True)
+    dispatch_context = Column(JSON, nullable=True)

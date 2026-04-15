@@ -154,6 +154,7 @@ def get_submission_status(
         "command_name": command_name,
         "stages": stages,
         "result": result,
+        "external_run_url": submission.external_run_url,
     }
 
 
@@ -161,8 +162,12 @@ def _build_stages(submission: Submission) -> dict:
     """Build the pipeline stages object for the status response."""
     status = submission.status
 
-    # Status progression: pending → static_analysis → ai_review → container_test → published/rejected
-    STAGE_ORDER = ["pending", "static_analysis", "ai_review", "container_test", "published", "rejected"]
+    # Status progression: pending → static_analysis → ai_review → container_test →
+    # (awaiting_container if async) → published/rejected
+    STAGE_ORDER = [
+        "pending", "static_analysis", "ai_review", "container_test",
+        "awaiting_container", "published", "rejected",
+    ]
 
     def _stage_status(stage_name: str) -> str:
         """Determine if a stage is done, in_progress, or pending."""
@@ -192,6 +197,15 @@ def _build_stages(submission: Submission) -> dict:
             if stage_name == "ai_review":
                 return "passed" if submission.llm_provider else "skipped"
             return "done"
+
+        if status == "awaiting_container":
+            if stage_name == "static_analysis":
+                return "passed"
+            if stage_name == "ai_review":
+                return "passed" if submission.llm_provider else "skipped"
+            if stage_name == "container_test":
+                return "in_progress"
+            return "pending"
 
         # In-progress states
         if status == stage_name:
@@ -401,3 +415,74 @@ async def quick_submit(
         if repo_dir:
             cleanup_repo(repo_dir)
         raise HTTPException(500, f"Submission failed: {e}")
+
+
+# ── Container test callback (for out-of-process runners) ────────────────
+
+
+class ContainerResultCallback(BaseModel):
+    passed: bool
+    summary: str
+    test_count: int = 0
+    pass_count: int = 0
+    fail_count: int = 0
+    errors: list[str] = []
+    raw_output: str = ""
+
+
+@router.post("/v1/submissions/{submission_id}/container-result")
+def container_result_callback(
+    submission_id: int,
+    body: ContainerResultCallback,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Callback from an out-of-process container test runner (e.g. GitHub Actions).
+
+    Authenticated with a per-submission token issued when the runner was
+    dispatched. The token is stored on the submission row and cleared after
+    successful finalization — so it's single-use and scoped to one submission.
+    """
+    from ..services.container_test import ContainerTestResult
+    from ..services.finalize import _review_from_json, finalize_submission
+
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(404, "Submission not found")
+
+    if submission.status != "awaiting_container":
+        raise HTTPException(
+            409,
+            f"Submission is in status {submission.status!r}, not awaiting a container result",
+        )
+
+    expected_token = submission.callback_token
+    provided_token = request.headers.get("X-Pantry-Token", "")
+    if not expected_token or provided_token != expected_token:
+        raise HTTPException(401, "Invalid or missing callback token")
+
+    ctx = submission.dispatch_context or {}
+    if not ctx:
+        raise HTTPException(500, "Missing dispatch context — cannot finalize")
+
+    container_result = ContainerTestResult(
+        passed=body.passed,
+        summary=body.summary,
+        test_count=body.test_count,
+        pass_count=body.pass_count,
+        fail_count=body.fail_count,
+        errors=body.errors,
+        raw_output=body.raw_output,
+    )
+
+    finalize_submission(
+        db=db,
+        submission=submission,
+        manifest=ctx["manifest"],
+        review=_review_from_json(ctx.get("review")),
+        author_github=ctx["author_github"],
+        repo_url=ctx["repo_url"],
+        container_result=container_result,
+    )
+
+    return {"status": submission.status, "submission_id": submission.id}
