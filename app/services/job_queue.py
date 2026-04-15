@@ -107,8 +107,6 @@ class ValidationQueue:
                 logger.error("Submission %d not found", job.submission_id)
                 return
 
-            command_name = job.manifest["name"]
-            version = job.manifest.get("version", "0.1.0")
             components = job.manifest.get("components", [])
             is_bundle = len(components) > 1 or (
                 len(components) == 1 and components[0].get("type") != "command"
@@ -116,8 +114,6 @@ class ValidationQueue:
                 # Convention layout (commands/*/command.py) needs bundle treatment
                 len(components) == 1 and "/" in components[0].get("path", "")
             )
-            package_type = "bundle" if is_bundle else "command"
-
             # Stage 1: AI security review
             review: SecurityReviewResult | None = None
             if job.llm_api_key:

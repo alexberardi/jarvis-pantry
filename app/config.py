@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     container_test_timeout: int = Field(180, alias="CONTAINER_TEST_TIMEOUT")
     bypass_llm_key: bool = Field(False, alias="BYPASS_LLM_KEY")
     container_runner: str = Field("local", alias="PANTRY_CONTAINER_RUNNER")  # "local" or "github_actions"
+    # GitHub Actions runner config (only required when container_runner=github_actions)
+    pantry_gh_token: str = Field("", alias="PANTRY_GH_TOKEN")
+    pantry_runner_repo: str = Field("alexberardi/jarvis-pantry-runner", alias="PANTRY_RUNNER_REPO")
+    pantry_runner_workflow: str = Field("container-test.yml", alias="PANTRY_RUNNER_WORKFLOW")
+    pantry_runner_ref: str = Field("main", alias="PANTRY_RUNNER_REF")
+    pantry_callback_base_url: str = Field("", alias="PANTRY_CALLBACK_BASE_URL")
 
     model_config = SettingsConfigDict(
         env_file=".env",
