@@ -13,6 +13,7 @@ Exit code 0 = all tests pass, non-zero = failures.
 """
 
 import json
+import os
 import sys
 import time
 import traceback
@@ -20,10 +21,15 @@ from pathlib import Path
 
 import yaml
 
-# The repo is mounted at /test/repo/ (bundle) or /test/command/ (single command)
-sys.path.insert(0, "/test/repo")
-sys.path.insert(0, "/test/command")
-sys.path.insert(0, "/test")
+# Paths default to Docker container mount points, but can be overridden so
+# the same harness runs on a bare GitHub Actions runner (runner repo).
+_TEST_DIR = os.environ.get("JARVIS_HARNESS_TEST_DIR", "/test")
+_REPO_DIR = os.environ.get("JARVIS_HARNESS_REPO_DIR", f"{_TEST_DIR}/repo")
+_COMMAND_DIR = os.environ.get("JARVIS_HARNESS_COMMAND_DIR", f"{_TEST_DIR}/command")
+
+sys.path.insert(0, _REPO_DIR)
+sys.path.insert(0, _COMMAND_DIR)
+sys.path.insert(0, _TEST_DIR)
 
 
 def _find_class_in_module(module, base_class):
@@ -58,7 +64,7 @@ def _infer_components_from_structure() -> list[dict]:
     }
 
     components: list[dict] = []
-    repo_root = Path("/test/repo")
+    repo_root = Path(_REPO_DIR)
 
     # Root-level command.py
     if (repo_root / "command.py").exists():
@@ -86,7 +92,7 @@ def _infer_components_from_structure() -> list[dict]:
 def _load_manifest() -> dict | None:
     """Load manifest from the container's test directory."""
     for name in ("jarvis_package.yaml", "jarvis_command.yaml"):
-        for base in ("/test/repo", "/test/command", "/test"):
+        for base in (_REPO_DIR, _COMMAND_DIR, _TEST_DIR):
             path = Path(base) / name
             if path.exists():
                 with open(path) as f:
@@ -102,7 +108,7 @@ def _run_command_tests(record, comp_path: str = "command") -> None:
     # Ensure the component's parent dir is on path
     comp_file = Path(comp_path)
     if comp_file.parent != Path("."):
-        parent = Path("/test/repo") / comp_file.parent
+        parent = Path(_REPO_DIR) / comp_file.parent
         if str(parent) not in sys.path:
             sys.path.insert(0, str(parent))
 
@@ -223,7 +229,7 @@ def _run_agent_tests(record, comp_path: str = "agent.py") -> None:
 
     comp_file = Path(comp_path)
     if comp_file.parent != Path("."):
-        parent = Path("/test/repo") / comp_file.parent
+        parent = Path(_REPO_DIR) / comp_file.parent
         if str(parent) not in sys.path:
             sys.path.insert(0, str(parent))
 
@@ -296,7 +302,7 @@ def _run_protocol_tests(record, comp_path: str = "protocol.py") -> None:
 
     comp_file = Path(comp_path)
     if comp_file.parent != Path("."):
-        parent = Path("/test/repo") / comp_file.parent
+        parent = Path(_REPO_DIR) / comp_file.parent
         if str(parent) not in sys.path:
             sys.path.insert(0, str(parent))
 
@@ -345,7 +351,7 @@ def _run_device_manager_tests(record, comp_path: str = "manager.py") -> None:
 
     comp_file = Path(comp_path)
     if comp_file.parent != Path("."):
-        parent = Path("/test/repo") / comp_file.parent
+        parent = Path(_REPO_DIR) / comp_file.parent
         if str(parent) not in sys.path:
             sys.path.insert(0, str(parent))
 
@@ -405,7 +411,7 @@ def _run_prompt_provider_tests(record, comp_path: str = "provider.py") -> None:
     import ast
 
     comp_file = Path(comp_path)
-    full_path = Path("/test/repo") / comp_file
+    full_path = Path(_REPO_DIR) / comp_file
     if not full_path.exists():
         record("file_exists", False, f"Provider file not found: {comp_path}")
         return
