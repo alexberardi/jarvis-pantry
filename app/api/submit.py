@@ -356,18 +356,19 @@ async def quick_submit(
         # 5. Per-user rate limit. Counts confirmed submissions in the last hour
         # from the submissions table; previews (confirm=false) are free. DB-backed
         # so it's consistent across Fly machines and survives restarts.
-        user_limit = settings.submission_rate_limit_per_user_per_hour
-        recent_count = db.query(Submission).filter(
-            Submission.author_id == author.id,
-            Submission.submitted_at > datetime.now(timezone.utc) - timedelta(hours=1),
-        ).count()
-        if recent_count >= user_limit:
-            cleanup_repo(repo_dir)
-            raise HTTPException(
-                429,
-                f"Rate limit exceeded: {user_limit} submissions per hour per user. "
-                "Please try again later.",
-            )
+        if not settings.rate_limit_disabled:
+            user_limit = settings.submission_rate_limit_per_user_per_hour
+            recent_count = db.query(Submission).filter(
+                Submission.author_id == author.id,
+                Submission.submitted_at > datetime.now(timezone.utc) - timedelta(hours=1),
+            ).count()
+            if recent_count >= user_limit:
+                cleanup_repo(repo_dir)
+                raise HTTPException(
+                    429,
+                    f"Rate limit exceeded: {user_limit} submissions per hour per user. "
+                    "Please try again later.",
+                )
 
         # 6. Create submission record
         submission = Submission(

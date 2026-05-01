@@ -1,8 +1,16 @@
-"""In-memory rate limiter for the command store."""
+"""In-memory rate limiter for the command store.
+
+Set RATE_LIMIT_DISABLED=true to bypass all rate checks (dev/testing).
+"""
 
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
+
+
+def _is_disabled() -> bool:
+    from app.config import get_settings
+    return get_settings().rate_limit_disabled
 
 
 @dataclass
@@ -41,10 +49,14 @@ class RateLimiter:
 
     def check(self, key: str) -> bool:
         """Check if a request from key is allowed."""
+        if _is_disabled():
+            return True
         return self._buckets[key].allow()
 
     def remaining(self, key: str) -> int:
         """Get remaining requests for a key."""
+        if _is_disabled():
+            return 999
         return self._buckets[key].remaining
 
 
