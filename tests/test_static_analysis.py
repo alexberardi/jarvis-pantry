@@ -541,3 +541,92 @@ class TestStaticAnalysisResult:
             errors=["e1", "e2"],
         )
         assert result.to_dict()["checks_passed"] == 6
+
+
+# ── Jarvis package dependencies (transitive inheritance) ──────────────────
+
+
+TRANSITIVE_PROTOCOL = """\
+from nest import NestProtocol
+
+class ExtendedNest(NestProtocol):
+    @property
+    def protocol_name(self):
+        return "nest_extended"
+
+    @property
+    def supported_domains(self):
+        return ["climate", "energy"]
+
+    async def discover(self):
+        return []
+
+    async def control(self, entity_id, action, params=None):
+        pass
+
+    async def get_state(self, entity_id):
+        return {}
+"""
+
+
+class TestJarvisDependencyAnalysis:
+    def test_transitive_inheritance_accepted_with_deps(self, tmp_path):
+        """Protocol inheriting from dependency class passes with jarvis_dependencies."""
+        repo = _make_bundle_repo(tmp_path, [
+            {"type": "device_protocol", "name": "nest_ext", "path": "device_families/nest_ext/protocol.py"},
+        ], manifest_extra={"jarvis_dependencies": ["nest"]})
+
+        (repo / "device_families" / "nest_ext").mkdir(parents=True)
+        (repo / "device_families" / "nest_ext" / "protocol.py").write_text(TRANSITIVE_PROTOCOL)
+
+        result = run_static_analysis(repo)
+        assert result.passed is True
+        assert any("transitive inheritance" in w.lower() for w in result.warnings)
+
+    def test_transitive_inheritance_rejected_without_deps(self, tmp_path):
+        """Same code without jarvis_dependencies declaration fails."""
+        repo = _make_bundle_repo(tmp_path, [
+            {"type": "device_protocol", "name": "nest_ext", "path": "device_families/nest_ext/protocol.py"},
+        ])
+        # No jarvis_dependencies
+
+        (repo / "device_families" / "nest_ext").mkdir(parents=True)
+        (repo / "device_families" / "nest_ext" / "protocol.py").write_text(TRANSITIVE_PROTOCOL)
+
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("IJarvisDeviceProtocol" in e for e in result.errors)
+
+    def test_required_methods_still_checked_with_deps(self, tmp_path):
+        """Missing required methods are still flagged even with jarvis_dependencies."""
+        incomplete_code = """\
+from nest import NestProtocol
+
+class IncompleteNest(NestProtocol):
+    @property
+    def protocol_name(self):
+        return "incomplete"
+"""
+        repo = _make_bundle_repo(tmp_path, [
+            {"type": "device_protocol", "name": "bad_ext", "path": "device_families/bad/protocol.py"},
+        ], manifest_extra={"jarvis_dependencies": ["nest"]})
+
+        (repo / "device_families" / "bad").mkdir(parents=True)
+        (repo / "device_families" / "bad" / "protocol.py").write_text(incomplete_code)
+
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("missing required" in e.lower() for e in result.errors)
+
+    def test_no_class_at_all_fails_even_with_deps(self, tmp_path):
+        """File with no class definitions fails even with jarvis_dependencies."""
+        repo = _make_bundle_repo(tmp_path, [
+            {"type": "device_protocol", "name": "empty", "path": "device_families/empty/protocol.py"},
+        ], manifest_extra={"jarvis_dependencies": ["nest"]})
+
+        (repo / "device_families" / "empty").mkdir(parents=True)
+        (repo / "device_families" / "empty" / "protocol.py").write_text("# empty file\ndef helper(): pass\n")
+
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("no class definition" in e.lower() for e in result.errors)

@@ -221,11 +221,30 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
         target_class = _find_class_by_base(tree, base_class_name)
 
         if target_class is None:
-            result.passed = False
-            result.errors.append(
-                f"Component '{comp_name}': no class inheriting from {base_class_name} found in {comp_path}"
-            )
-            continue
+            jarvis_deps = manifest.get("jarvis_dependencies", []) if manifest else []
+            if jarvis_deps:
+                # Package declares Jarvis dependencies — the class may inherit
+                # from a dependency's class (transitive SDK base). Accept this
+                # and let the container test validate the inheritance chain.
+                any_class = _find_any_class_with_bases(tree)
+                if any_class is None:
+                    result.passed = False
+                    result.errors.append(
+                        f"Component '{comp_name}': no class definition found in {comp_path}"
+                    )
+                    continue
+                result.warnings.append(
+                    f"Component '{comp_name}': no direct {base_class_name} base class found. "
+                    f"Declared jarvis_dependencies={jarvis_deps} — transitive inheritance "
+                    f"will be validated in container tests."
+                )
+                target_class = any_class
+            else:
+                result.passed = False
+                result.errors.append(
+                    f"Component '{comp_name}': no class inheriting from {base_class_name} found in {comp_path}"
+                )
+                continue
 
         defined_names = _get_class_defined_names(target_class)
         for method in required_methods:
@@ -298,6 +317,19 @@ def _find_class_by_base(tree: ast.Module, base_class_name: str) -> ast.ClassDef 
             name = _get_name(base)
             if name and base_class_name in name:
                 return node
+    return None
+
+
+def _find_any_class_with_bases(tree: ast.Module) -> ast.ClassDef | None:
+    """Find the first class that inherits from something.
+
+    Used when ``jarvis_dependencies`` is declared — the component may
+    inherit from a dependency's class rather than directly from an SDK
+    base. We still need to find *a* class to check required methods on.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.bases:
+            return node
     return None
 
 
