@@ -82,6 +82,14 @@ def upsert_draft(
     if not body.package_name.strip():
         raise HTTPException(400, "Package name is required")
 
+    # Warn (log) if README.md is missing — required for Pantry submission
+    filenames = {f.get("filename", "").lower() for f in body.files}
+    if "readme.md" not in filenames:
+        logger.warning(
+            "Forge draft '%s' is missing README.md — required for Pantry submission",
+            body.package_name,
+        )
+
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(minutes=_EXPIRY_MINUTES)
 

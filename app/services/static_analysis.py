@@ -264,7 +264,15 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
     if components:
         _check_shared_dir_conflicts(repo_dir, components, result)
 
-    # 5. Deep manifest validation
+    # 5. Check for README.md
+    readme_found = any(
+        (repo_dir / name).exists()
+        for name in ("README.md", "readme.md", "Readme.md", "README.MD")
+    )
+    if not readme_found:
+        result.warnings.append("Missing README.md — a README is required for Pantry submission")
+
+    # 6. Deep manifest validation
     if manifest:
         _validate_manifest_deep(manifest, result)
 

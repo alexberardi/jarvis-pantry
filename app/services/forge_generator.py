@@ -187,6 +187,10 @@ Respond with ONLY a JSON object (no markdown fences, no explanation outside the 
 - If the command needs pip packages, declare them BOTH in `required_packages` property AND in the manifest `packages` list
 - If the command needs API keys, declare them as JarvisSecret in `required_secrets` AND in the manifest `secrets` list
 
+### README
+- Every package MUST include a README.md — it is validated by the Pantry pipeline
+- README must include: package description, setup instructions (secrets, API keys), usage examples (voice commands), and supported actions
+
 ### Example Manifest (use this exact structure)
 ```yaml
 schema_version: 1
