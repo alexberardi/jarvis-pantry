@@ -108,6 +108,19 @@ Run migrations: `alembic upgrade head`
 - `jarvis-node-mobile` — (future) Store UI screen
 - `jarvis-admin` — (future) Store management tab
 
+## Required Package Files
+
+Every Pantry package (single-command or bundle) **must** include:
+
+| File | Purpose |
+|------|---------|
+| `jarvis_command.yaml` or `jarvis_package.yaml` | Manifest (metadata, components, secrets, deps) |
+| Entry file(s) (`command.py`, `protocol.py`, etc.) | Component implementation(s) |
+| `README.md` | Description, setup instructions, usage examples |
+| `LICENSE` | Open source license (MIT recommended) |
+
+The Forge generates all four automatically. Static analysis warns on missing README or LICENSE.
+
 ## Package Bundles
 
 The Pantry supports multi-component bundles via `jarvis_package.yaml`.
