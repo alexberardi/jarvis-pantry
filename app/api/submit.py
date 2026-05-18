@@ -23,6 +23,8 @@ from ..services.github_service import (
     verify_repo_access,
 )
 from ..services.job_queue import SubmissionJob, validation_queue
+from ..services import rejection_codes as rc
+from ..services.rejection_codes import Finding, doc_url
 from ..services.security_review import estimate_review_cost
 from ..services.static_analysis import run_static_analysis
 from ..services.submission_pipeline import process_submission
@@ -226,14 +228,17 @@ def _build_stages(submission: Submission) -> dict:
         "queue": {"status": "done" if status != "pending" else "waiting"},
     }
 
-    # Static analysis
+    # Static analysis — dual-shape: prefer the new #18 `findings`/`reason_codes`
+    # if present, otherwise wrap legacy flat-string entries on the fly.
     sa_status = _stage_status("static_analysis")
     sa_stage: dict = {"status": sa_status}
     if submission.static_analysis_result:
         sa = submission.static_analysis_result
         sa_stage["checks_passed"] = sa.get("checks_passed", 0)
-        sa_stage["warnings"] = sa.get("warnings", [])
-        sa_stage["dangerous_patterns"] = sa.get("dangerous_patterns", [])
+        normalized = _normalize_static_analysis_result(sa)
+        sa_stage["findings"] = normalized["findings"]
+        sa_stage["warnings"] = normalized["warnings"]
+        sa_stage["reason_codes"] = normalized["reason_codes"]
     stages["static_analysis"] = sa_stage
 
     # AI review
@@ -255,6 +260,74 @@ def _build_stages(submission: Submission) -> dict:
     stages["container_test"] = ct_stage
 
     return stages
+
+
+def _normalize_static_analysis_result(sa: dict) -> dict:
+    """Dual-shape reader for the stored ``static_analysis_result`` JSON column.
+
+    Pre-#18 rows have ``errors``/``warnings``/``dangerous_patterns`` as flat
+    string lists. Post-#18 rows additionally have ``findings`` (errors) +
+    ``warnings_structured`` + ``reason_codes`` carrying the structured shape.
+
+    Returns a normalized dict with ``findings``, ``warnings`` (both lists of
+    Finding-shaped dicts) and ``reason_codes`` (deduplicated list of strings).
+    Legacy flat-string rows are wrapped as ``legacy_unstructured`` findings.
+
+    Must never raise — a malformed row should degrade to an empty/partial
+    response, not 500.
+    """
+    if not isinstance(sa, dict):
+        return {"findings": [], "warnings": [], "reason_codes": []}
+
+    has_new_shape = "findings" in sa or "reason_codes" in sa
+
+    findings_out: list[dict] = []
+    warnings_out: list[dict] = []
+    reason_codes_seen: list[str] = []
+
+    def _add(items: object, severity: str, target: list[dict]) -> None:
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if isinstance(item, dict) and "reason_code" in item:
+                # Already-structured finding — pass through verbatim
+                target.append(item)
+                rc_str = item.get("reason_code")
+                if isinstance(rc_str, str) and rc_str not in reason_codes_seen:
+                    reason_codes_seen.append(rc_str)
+            elif isinstance(item, str):
+                # Legacy flat-string entry — wrap as legacy_unstructured
+                target.append({
+                    "reason_code": rc.LEGACY_UNSTRUCTURED,
+                    "severity": severity,
+                    "doc_url": doc_url(rc.LEGACY_UNSTRUCTURED),
+                    "message": item,
+                })
+                if rc.LEGACY_UNSTRUCTURED not in reason_codes_seen:
+                    reason_codes_seen.append(rc.LEGACY_UNSTRUCTURED)
+
+    if has_new_shape:
+        # Prefer the structured fields.
+        _add(sa.get("findings"), "error", findings_out)
+        # Post-#18 rows put warning-severity findings under `warnings_structured`
+        # (the top-level `warnings` key still carries legacy strings).
+        _add(sa.get("warnings_structured"), "warning", warnings_out)
+        passthrough_codes = sa.get("reason_codes")
+        if isinstance(passthrough_codes, list):
+            for code in passthrough_codes:
+                if isinstance(code, str) and code not in reason_codes_seen:
+                    reason_codes_seen.append(code)
+    else:
+        # Legacy-only row — wrap the flat-string lists.
+        _add(sa.get("errors"), "error", findings_out)
+        _add(sa.get("warnings"), "warning", warnings_out)
+        _add(sa.get("dangerous_patterns"), "warning", warnings_out)
+
+    return {
+        "findings": findings_out,
+        "warnings": warnings_out,
+        "reason_codes": reason_codes_seen,
+    }
 
 
 # ── Quick submit (no OAuth, with validation pipeline) ───────────────────
@@ -328,11 +401,17 @@ async def quick_submit(
 
         if not analysis.passed:
             cleanup_repo(repo_dir)
+            # Hard cut to the #18 structured rejection envelope. No `errors`,
+            # no `dangerous_patterns`, no `errors_legacy` — per Alex's call on
+            # the #18 thread (2026-05-18).
+            error_findings = [f.to_dict() for f in analysis.findings if f.severity == "error"]
+            warning_findings = [f.to_dict() for f in analysis.findings if f.severity == "warning"]
             raise HTTPException(422, detail={
+                "result": "rejected",
                 "message": "Static analysis failed",
-                "errors": analysis.errors,
-                "warnings": analysis.warnings,
-                "dangerous_patterns": analysis.dangerous_patterns,
+                "reason_codes": analysis.reason_codes,
+                "findings": error_findings,
+                "warnings": warning_findings,
             })
 
         # 4. Estimate AI review cost (if key provided)
