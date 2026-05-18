@@ -1,10 +1,12 @@
 """Tests for the submission endpoints."""
 
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock, MagicMock
 
+import pytest
 import yaml
 
 from app.models import Author, Command, Submission
@@ -448,6 +450,212 @@ class TestQuickSubmit:
             "confirm": True,
         })
         assert resp.status_code == 200, resp.json()
+        _teardown_quick_submit_auth()
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.validation_queue")
+    def test_per_user_rate_limit_bypassed_when_disabled(
+        self, mock_queue, mock_clone, mock_settings, mock_verify,
+        client, seed_data, db_session, tmp_path,
+    ):
+        """rate_limit_disabled=True is the dev escape hatch: submission accepted at the limit."""
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 3
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = True
+
+        for _ in range(3):
+            db_session.add(Submission(
+                github_repo_url="https://github.com/test/prior",
+                author_id=seed_data["author"].id,
+                status="published",
+            ))
+        db_session.commit()
+
+        repo = _make_fake_repo(tmp_path)
+        mock_clone.return_value = repo
+        mock_queue.enqueue = AsyncMock()
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            "confirm": True,
+        })
+        assert resp.status_code == 200
+        assert "submission_id" in resp.json()
+        _teardown_quick_submit_auth()
+
+    @pytest.mark.parametrize("prior_count,expected_status", [
+        (2, 200),   # under-limit: accepted
+        (3, 429),   # at-limit (>=): rejected — locks the `>=` half of the comparator
+        (10, 429),  # far-over: still rejected
+    ])
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.validation_queue")
+    def test_per_user_rate_limit_boundary(
+        self, mock_queue, mock_clone, mock_settings, mock_verify,
+        client, seed_data, db_session, tmp_path,
+        prior_count, expected_status,
+    ):
+        """Boundary cases lock the `recent_count >= user_limit` comparator at submit.py:461."""
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 3
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
+
+        for _ in range(prior_count):
+            db_session.add(Submission(
+                github_repo_url="https://github.com/test/prior",
+                author_id=seed_data["author"].id,
+                status="published",
+            ))
+        db_session.commit()
+
+        repo = _make_fake_repo(tmp_path)
+        mock_clone.return_value = repo
+        mock_queue.enqueue = AsyncMock()
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            "confirm": True,
+        })
+        assert resp.status_code == expected_status
+        if expected_status == 429:
+            assert "per hour" in resp.json()["detail"]
+        else:
+            assert "submission_id" in resp.json()
+        _teardown_quick_submit_auth()
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.validation_queue")
+    def test_per_user_rate_limit_isolated_per_author(
+        self, mock_queue, mock_clone, mock_settings, mock_verify,
+        client, seed_data, db_session, tmp_path,
+    ):
+        """A different author's submissions must not count toward our limit."""
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 3
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
+
+        other_author = Author(
+            id=999,
+            github_id=99999,
+            github_username="otheruser",
+            display_name="Other User",
+            avatar_url="https://example.com/other.png",
+        )
+        db_session.add(other_author)
+        db_session.commit()
+
+        # Seed 3 submissions for the OTHER author — should not count toward our limit
+        for _ in range(3):
+            db_session.add(Submission(
+                github_repo_url="https://github.com/other/prior",
+                author_id=other_author.id,
+                status="published",
+            ))
+        db_session.commit()
+
+        repo = _make_fake_repo(tmp_path)
+        mock_clone.return_value = repo
+        mock_queue.enqueue = AsyncMock()
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            "confirm": True,
+        })
+        assert resp.status_code == 200
+        assert "submission_id" in resp.json()
+        _teardown_quick_submit_auth()
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.validation_queue")
+    def test_per_user_rate_limit_ignores_old_submissions(
+        self, mock_queue, mock_clone, mock_settings, mock_verify,
+        client, seed_data, db_session, tmp_path,
+    ):
+        """Submissions older than 1 hour are outside the rolling window — don't count."""
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 3
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
+
+        old_time = datetime.now(timezone.utc) - timedelta(hours=2)
+        for _ in range(3):
+            db_session.add(Submission(
+                github_repo_url="https://github.com/test/prior",
+                author_id=seed_data["author"].id,
+                status="published",
+                submitted_at=old_time,
+            ))
+        db_session.commit()
+
+        repo = _make_fake_repo(tmp_path)
+        mock_clone.return_value = repo
+        mock_queue.enqueue = AsyncMock()
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            "confirm": True,
+        })
+        assert resp.status_code == 200
+        assert "submission_id" in resp.json()
+        _teardown_quick_submit_auth()
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    def test_per_user_rate_limit_does_not_apply_to_previews(
+        self, mock_clone, mock_settings, mock_verify,
+        client, seed_data, db_session, tmp_path,
+    ):
+        """Previews (confirm=false) bypass the rate-limit check — it sits after the preview return."""
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 3
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
+
+        # Well over the limit
+        for _ in range(5):
+            db_session.add(Submission(
+                github_repo_url="https://github.com/test/prior",
+                author_id=seed_data["author"].id,
+                status="published",
+            ))
+        db_session.commit()
+
+        repo = _make_fake_repo(tmp_path)
+        mock_clone.return_value = repo
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            # No confirm=True — preview mode
+        })
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "preview"
         _teardown_quick_submit_auth()
 
     @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, side_effect=RepoValidationError("You don't have push access"))
