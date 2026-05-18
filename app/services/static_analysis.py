@@ -78,6 +78,19 @@ DANGEROUS_CALLS: set[str] = {
     "subprocess.check_call", "subprocess.check_output",
 }
 
+# Calls whose presence is a hard rejection (not just a warning). Subset of
+# DANGEROUS_CALLS — submissions invoking any of these are rejected outright.
+# `compile` and `__import__` remain warn-only.
+HARD_FAIL_CALLS: set[str] = {
+    "eval", "exec",
+    "os.system", "os.popen",
+    "os.exec", "os.execl", "os.execle", "os.execlp",
+    "os.execv", "os.execve", "os.execvp", "os.execvpe",
+    "os.spawn", "os.spawnl", "os.spawnle",
+    "subprocess.run", "subprocess.call", "subprocess.Popen",
+    "subprocess.check_call", "subprocess.check_output",
+}
+
 # Database modules — flagged because commands should use CommandDataRepository
 DATABASE_MODULES: set[str] = {"sqlite3", "sqlalchemy", "alembic", "psycopg2", "asyncpg", "aiosqlite", "peewee"}
 
