@@ -125,31 +125,6 @@ class Partial(IJarvisCommand):
 
 
 class TestDangerousPatterns:
-    def test_eval_detected(self, tmp_path):
-        code = VALID_COMMAND + "\n    def extra(self):\n        eval('x')\n"
-        repo = _make_repo(tmp_path, code)
-        result = run_static_analysis(repo)
-        assert result.passed is True  # passes with warning
-        assert any("eval" in p for p in result.dangerous_patterns)
-
-    def test_subprocess_import(self, tmp_path):
-        code = "import subprocess\n" + VALID_COMMAND
-        repo = _make_repo(tmp_path, code)
-        result = run_static_analysis(repo)
-        assert any("subprocess" in p for p in result.dangerous_patterns)
-
-    def test_os_system_call(self, tmp_path):
-        code = VALID_COMMAND + "\n    def extra(self):\n        import os\n        os.system('ls')\n"
-        repo = _make_repo(tmp_path, code)
-        result = run_static_analysis(repo)
-        assert any("os" in p for p in result.dangerous_patterns)
-
-    def test_exec_detected(self, tmp_path):
-        code = VALID_COMMAND + "\n    def extra(self):\n        exec('x = 1')\n"
-        repo = _make_repo(tmp_path, code)
-        result = run_static_analysis(repo)
-        assert any("exec" in p for p in result.dangerous_patterns)
-
     def test_clean_command_no_patterns(self, tmp_path):
         repo = _make_repo(tmp_path, VALID_COMMAND)
         result = run_static_analysis(repo)
@@ -434,8 +409,12 @@ class BadAgent(IJarvisAgent):
         assert any("not found" in e for e in result.errors)
 
     def test_bundle_dangerous_pattern_in_agent(self, tmp_path):
-        """Dangerous patterns in agent components are still flagged."""
-        dangerous_agent = "import subprocess\n" + VALID_AGENT
+        """Hard-fail primitives in bundle components reject the whole bundle."""
+        dangerous_agent = (
+            "import subprocess\n"
+            + VALID_AGENT
+            + "\n    def extra(self):\n        subprocess.run(['ls'])\n"
+        )
         repo = _make_bundle_repo(tmp_path, [
             {"type": "agent", "name": "evil", "path": "agents/evil/agent.py"},
         ])
@@ -443,6 +422,8 @@ class BadAgent(IJarvisAgent):
         (repo / "agents" / "evil" / "agent.py").write_text(dangerous_agent)
 
         result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("subprocess.run" in e for e in result.errors)
         assert any("subprocess" in p for p in result.dangerous_patterns)
 
     def test_v1_compat_no_components(self, tmp_path):
@@ -542,6 +523,14 @@ class TestStaticAnalysisResult:
         )
         assert result.to_dict()["checks_passed"] == 6
 
+    def test_checks_passed_decreases_with_hard_fail_errors(self, tmp_path):
+        """A single hard-fail primitive lowers checks_passed from 8 → 7."""
+        code = VALID_COMMAND + "\n    def extra(self):\n        eval('x')\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert result.to_dict()["checks_passed"] == 7
+
 
 # ── Jarvis package dependencies (transitive inheritance) ──────────────────
 
@@ -630,3 +619,161 @@ class IncompleteNest(NestProtocol):
         result = run_static_analysis(repo)
         assert result.passed is False
         assert any("no class definition" in e.lower() for e in result.errors)
+
+
+# ── Hard-fail primitives (eval/exec/os.system/os.popen/os.exec*/os.spawn*/subprocess.*) ──
+
+import pytest
+
+
+def _command_with_extra(body_line: str) -> str:
+    """Helper: append a single body line inside a method on VALID_COMMAND."""
+    return VALID_COMMAND + f"\n    def extra(self):\n        {body_line}\n"
+
+
+class TestHardFailPrimitives:
+    # Direct calls (replaces warn-only tests)
+
+    def test_eval_hard_fails(self, tmp_path):
+        repo = _make_repo(tmp_path, _command_with_extra("eval('x')"))
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("eval" in e for e in result.errors)
+
+    def test_exec_hard_fails(self, tmp_path):
+        repo = _make_repo(tmp_path, _command_with_extra("exec('x = 1')"))
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("exec" in e for e in result.errors)
+
+    def test_os_system_hard_fails(self, tmp_path):
+        code = VALID_COMMAND + "\n    def extra(self):\n        import os\n        os.system('ls')\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("os.system" in e for e in result.errors)
+
+    def test_subprocess_run_hard_fails(self, tmp_path):
+        code = "import subprocess\n" + VALID_COMMAND + "\n    def extra(self):\n        subprocess.run(['ls'])\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("subprocess.run" in e for e in result.errors)
+
+    # subprocess.* family coverage (broad rule per Alex's resolution)
+
+    def test_subprocess_call_hard_fails(self, tmp_path):
+        code = "import subprocess\n" + VALID_COMMAND + "\n    def extra(self):\n        subprocess.call(['ls'])\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("subprocess.call" in e for e in result.errors)
+
+    def test_subprocess_popen_hard_fails(self, tmp_path):
+        code = "import subprocess\n" + VALID_COMMAND + "\n    def extra(self):\n        subprocess.Popen(['ls'])\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("subprocess.Popen" in e for e in result.errors)
+
+    def test_subprocess_check_call_hard_fails(self, tmp_path):
+        code = "import subprocess\n" + VALID_COMMAND + "\n    def extra(self):\n        subprocess.check_call(['ls'])\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("subprocess.check_call" in e for e in result.errors)
+
+    def test_subprocess_check_output_hard_fails(self, tmp_path):
+        code = "import subprocess\n" + VALID_COMMAND + "\n    def extra(self):\n        subprocess.check_output(['ls'])\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("subprocess.check_output" in e for e in result.errors)
+
+    # os.* family coverage
+
+    def test_os_popen_hard_fails(self, tmp_path):
+        code = VALID_COMMAND + "\n    def extra(self):\n        import os\n        os.popen('ls')\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("os.popen" in e for e in result.errors)
+
+    @pytest.mark.parametrize("fn", [
+        "os.exec", "os.execl", "os.execle", "os.execlp",
+        "os.execv", "os.execve", "os.execvp", "os.execvpe",
+    ])
+    def test_os_exec_family_hard_fails(self, tmp_path, fn):
+        code = VALID_COMMAND + f"\n    def extra(self):\n        import os\n        {fn}('/bin/ls', 'ls')\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any(fn in e for e in result.errors)
+
+    @pytest.mark.parametrize("fn", ["os.spawn", "os.spawnl", "os.spawnle"])
+    def test_os_spawn_family_hard_fails(self, tmp_path, fn):
+        code = VALID_COMMAND + f"\n    def extra(self):\n        import os\n        {fn}(0, '/bin/ls')\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any(fn in e for e in result.errors)
+
+    # Negative-space regression guards (warn-only must still pass)
+
+    def test_compile_stays_warn_only(self, tmp_path):
+        code = VALID_COMMAND + "\n    def extra(self):\n        compile('1', '<s>', 'exec')\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        assert result.passed is True
+        assert any("compile" in p for p in result.dangerous_patterns)
+        assert not any("Disallowed primitive" in e for e in result.errors)
+
+    def test_dunder_import_stays_warn_only(self, tmp_path):
+        code = VALID_COMMAND + "\n    def extra(self):\n        __import__('os')\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        assert result.passed is True
+        assert any("__import__" in p for p in result.dangerous_patterns)
+        assert not any("Disallowed primitive" in e for e in result.errors)
+
+    def test_sql_mutation_stays_warn_only(self, tmp_path):
+        code = VALID_COMMAND + '\n    def extra(self):\n        q = "CREATE TABLE users (id INT)"\n'
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        assert result.passed is True
+        assert any("SQL mutation" in p for p in result.dangerous_patterns)
+        assert not any("Disallowed primitive" in e for e in result.errors)
+
+    # Bundle-level rejection
+
+    def test_bundle_hard_fail_in_one_component_rejects_bundle(self, tmp_path):
+        evil_agent = VALID_AGENT + "\n    def extra(self):\n        eval('x')\n"
+        repo = _make_bundle_repo(tmp_path, [
+            {"type": "command", "name": "good", "path": "commands/good/command.py"},
+            {"type": "agent", "name": "evil", "path": "agents/evil/agent.py"},
+        ])
+        (repo / "commands" / "good").mkdir(parents=True)
+        (repo / "commands" / "good" / "command.py").write_text(VALID_COMMAND)
+        (repo / "agents" / "evil").mkdir(parents=True)
+        (repo / "agents" / "evil" / "agent.py").write_text(evil_agent)
+
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("eval" in e for e in result.errors)
+
+    def test_bundle_multiple_hard_fails_all_surfaced(self, tmp_path):
+        evil_cmd = VALID_COMMAND + "\n    def extra(self):\n        eval('x')\n"
+        evil_agent = VALID_AGENT + "\n    def extra(self):\n        import subprocess\n        subprocess.run(['ls'])\n"
+        repo = _make_bundle_repo(tmp_path, [
+            {"type": "command", "name": "evil_cmd", "path": "commands/evil_cmd/command.py"},
+            {"type": "agent", "name": "evil_agent", "path": "agents/evil_agent/agent.py"},
+        ])
+        (repo / "commands" / "evil_cmd").mkdir(parents=True)
+        (repo / "commands" / "evil_cmd" / "command.py").write_text(evil_cmd)
+        (repo / "agents" / "evil_agent").mkdir(parents=True)
+        (repo / "agents" / "evil_agent" / "agent.py").write_text(evil_agent)
+
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("eval" in e for e in result.errors)
+        assert any("subprocess.run" in e for e in result.errors)
