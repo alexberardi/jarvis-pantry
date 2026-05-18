@@ -179,6 +179,8 @@ class ValidationQueue:
                     author_github=job.author_github,
                     repo_url=job.repo_url,
                 )
+                submission.awaiting_container_since = datetime.now(timezone.utc)
+                submission.dispatch_attempts = (submission.dispatch_attempts or 0) + 1
                 db.commit()
                 logger.info(
                     "Submission %d awaiting container callback (%s)",

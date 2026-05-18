@@ -175,7 +175,7 @@ class Submission(Base):
     command_id = Column(Integer, ForeignKey("commands.id"), nullable=True)
     github_repo_url = Column(String(512), nullable=False)
     author_id = Column(Integer, ForeignKey("authors.id"), nullable=False)
-    status = Column(String(50), default="pending")  # pending, static_analysis, ai_review, container_test, awaiting_container, published, rejected
+    status = Column(String(50), default="pending")  # pending, static_analysis, ai_review, container_test, awaiting_container, published, rejected, callback_timeout
     error_message = Column(Text)
     static_analysis_result = Column(JSON, nullable=True)
     container_test_result = Column(JSON, nullable=True)
@@ -188,6 +188,11 @@ class Submission(Base):
     external_run_url = Column(String(512), nullable=True)
     callback_token = Column(String(64), nullable=True)
     dispatch_context = Column(JSON, nullable=True)
+    # Set at every awaiting_container transition (initial dispatch + each watcher
+    # retry). The callback-timeout watcher (#22) uses (now - this) to decide
+    # whether a stalled row should be retried or marked callback_timeout.
+    awaiting_container_since = Column(DateTime(timezone=True), nullable=True)
+    dispatch_attempts = Column(Integer, default=0, nullable=False)
     # Frozen lockfile (`uv pip compile` output) resolved at submission acceptance.
     # The runner installs from this verbatim — no live PyPI resolution at run time.
     resolved_lockfile = Column(Text, nullable=True)
