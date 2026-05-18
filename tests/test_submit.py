@@ -212,6 +212,7 @@ class TestQuickSubmit:
         settings.submission_rate_limit_per_hour = 100
         settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
 
         resp = client.post("/v1/commands/quick-submit", json={
             "repo_url": "https://github.com/test/jarvis-command-test",
@@ -231,6 +232,7 @@ class TestQuickSubmit:
         settings.submission_rate_limit_per_hour = 100
         settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
 
         repo = _make_fake_repo(tmp_path)
         mock_clone.return_value = repo
@@ -258,6 +260,7 @@ class TestQuickSubmit:
         settings.submission_rate_limit_per_hour = 100
         settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
 
         repo = _make_fake_repo(tmp_path)
         mock_clone.return_value = repo
@@ -285,6 +288,7 @@ class TestQuickSubmit:
         settings.submission_rate_limit_per_hour = 100
         settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
 
         repo = _make_fake_repo(tmp_path)
         mock_clone.return_value = repo
@@ -312,6 +316,7 @@ class TestQuickSubmit:
         settings.submission_rate_limit_per_hour = 100
         settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
 
         repo = tmp_path / "repo"
         repo.mkdir(parents=True)
@@ -336,6 +341,7 @@ class TestQuickSubmit:
         settings.submission_rate_limit_per_hour = 100
         settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
 
         repo = tmp_path / "repo"
         repo.mkdir(parents=True)
@@ -371,6 +377,7 @@ class TestQuickSubmit:
         settings.submission_rate_limit_per_hour = 100
         settings.submission_rate_limit_per_user_per_hour = 3
         settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
 
         # Seed the author to exactly the per-user limit.
         for _ in range(3):
@@ -667,6 +674,7 @@ class TestQuickSubmit:
         settings.submission_rate_limit_per_hour = 100
         settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
 
         _setup_quick_submit_auth(seed_data)
         resp = client.post("/v1/commands/quick-submit", json={
@@ -789,6 +797,7 @@ class TestRejectionEnvelopeShape:
         settings.submission_rate_limit_per_hour = 100
         settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
 
         repo = tmp_path / "repo"
         repo.mkdir(parents=True)
@@ -843,6 +852,7 @@ class TestRejectionEnvelopeShape:
         settings.submission_rate_limit_per_hour = 100
         settings.submission_rate_limit_per_user_per_hour = 100
         settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
 
         repo = _make_fake_repo(tmp_path)
         mock_clone.return_value = repo
