@@ -23,8 +23,13 @@ from ..services.github_service import (
     verify_repo_access,
 )
 from ..services.job_queue import SubmissionJob, validation_queue
+from ..services.lockfile_resolver import (
+    LockfileResolutionError,
+    LockfileTooLargeError,
+    resolve_lockfile,
+)
 from ..services import rejection_codes as rc
-from ..services.rejection_codes import Finding, doc_url
+from ..services.rejection_codes import Finding, doc_url, make_finding
 from ..services.security_review import estimate_review_cost
 from ..services.static_analysis import run_static_analysis
 from ..services.submission_pipeline import process_submission
@@ -449,6 +454,40 @@ async def quick_submit(
                     "Please try again later.",
                 )
 
+        # 5b. Resolve lockfile (synchronous at acceptance, per #21).
+        # No submission row is created on failure — author sees the rejection
+        # envelope and re-submits after fixing the manifest.
+        package_specs = [
+            p["name"] for p in manifest.get("packages", []) or []
+            if isinstance(p, dict) and p.get("name")
+        ]
+        try:
+            resolved_lockfile = resolve_lockfile(package_specs)
+        except LockfileTooLargeError as e:
+            cleanup_repo(repo_dir)
+            finding = make_finding(
+                rc.RESOLVED_LOCKFILE_EXCEEDS_SIZE_CAP, "error", message=str(e),
+            )
+            raise HTTPException(422, detail={
+                "result": "rejected",
+                "message": "Resolved lockfile exceeds size cap",
+                "reason_codes": [rc.RESOLVED_LOCKFILE_EXCEEDS_SIZE_CAP],
+                "findings": [finding.to_dict()],
+                "warnings": [],
+            })
+        except LockfileResolutionError as e:
+            cleanup_repo(repo_dir)
+            finding = make_finding(
+                rc.LOCKFILE_RESOLUTION_FAILED, "error", message=str(e),
+            )
+            raise HTTPException(422, detail={
+                "result": "rejected",
+                "message": f"Lockfile resolution failed: {e}",
+                "reason_codes": [rc.LOCKFILE_RESOLUTION_FAILED],
+                "findings": [finding.to_dict()],
+                "warnings": [],
+            })
+
         # 6. Create submission record
         submission = Submission(
             github_repo_url=repo_url,
@@ -456,6 +495,7 @@ async def quick_submit(
             status="static_analysis",
             static_analysis_result=analysis.to_dict(),
             llm_provider=body.llm_provider if body.llm_api_key else None,
+            resolved_lockfile=resolved_lockfile or None,
         )
         db.add(submission)
         db.commit()

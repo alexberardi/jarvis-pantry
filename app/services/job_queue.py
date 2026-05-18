@@ -162,7 +162,7 @@ class ValidationQueue:
             dispatch = await get_runner().dispatch(
                 command_dir=job.repo_dir,
                 submission_id=job.submission_id,
-                packages=[p["name"] for p in job.manifest.get("packages", []) if isinstance(p, dict)],
+                lockfile_content=submission.resolved_lockfile or "",
                 is_bundle=is_bundle,
                 repo_url=job.repo_url,
             )
