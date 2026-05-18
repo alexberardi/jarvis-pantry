@@ -14,6 +14,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import rejection_codes as rc
+from .rejection_codes import Finding, make_finding
+
 
 # Duplicated from jarvis-node-setup/core/command_manifest.py (stable)
 VALID_CATEGORIES: list[str] = [
@@ -100,19 +103,47 @@ SQL_MUTATION_KEYWORDS: list[str] = [
 
 @dataclass
 class StaticAnalysisResult:
-    """Result of static analysis on a command."""
+    """Result of static analysis on a command.
+
+    Carries the new structured ``findings`` list (#18) alongside the legacy
+    flat-string lists kept for back-compat with stored DB rows + existing
+    internal consumers. The HTTP rejection envelope emits only the new shape;
+    ``to_dict()`` storage payload includes both for transparent dual-shape reads.
+    """
 
     passed: bool
     warnings: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     dangerous_patterns: list[str] = field(default_factory=list)
+    # New structured findings (#18). Populated in parallel with the legacy fields.
+    findings: list[Finding] = field(default_factory=list)
+
+    def add_finding(self, finding: Finding) -> None:
+        """Append a structured finding. Caller still appends to legacy fields separately."""
+        self.findings.append(finding)
+
+    @property
+    def reason_codes(self) -> list[str]:
+        """Deduplicated list of reason codes across all findings (stable order)."""
+        seen: list[str] = []
+        for f in self.findings:
+            if f.reason_code not in seen:
+                seen.append(f.reason_code)
+        return seen
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "passed": self.passed,
+            # Legacy keys — kept so pre-#18 readers still work, and so the
+            # status-endpoint dual-shape detector can see the old shape.
             "warnings": self.warnings,
             "errors": self.errors,
             "dangerous_patterns": self.dangerous_patterns,
+            # New structured shape (#18). Findings are split by severity for
+            # easy client consumption; reason_codes is a deduped index.
+            "findings": [f.to_dict() for f in self.findings if f.severity == "error"],
+            "warnings_structured": [f.to_dict() for f in self.findings if f.severity == "warning"],
+            "reason_codes": self.reason_codes,
             "checks_passed": self._checks_passed,
         }
 
@@ -148,8 +179,13 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
                 if not isinstance(manifest, dict):
                     manifest = None
             except Exception as e:
-                result.errors.append(f"Failed to parse manifest: {e}")
+                msg = f"Failed to parse manifest: {e}"
+                result.errors.append(msg)
                 result.passed = False
+                result.add_finding(make_finding(
+                    rc.MANIFEST_PARSE_ERROR, "error",
+                    file=manifest_name, message=msg,
+                ))
             break
 
     # 2. Build component list (explicit or inferred from repo structure)
@@ -162,8 +198,10 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
         manifest_name = manifest.get("name", "unknown") if manifest else "unknown"
         components = _infer_components_from_structure(repo_dir, manifest_name)
         if not components:
+            msg = "No components found in repo (no components in manifest and no recognized directory structure)"
             result.passed = False
-            result.errors.append("No components found in repo (no components in manifest and no recognized directory structure)")
+            result.errors.append(msg)
+            result.add_finding(make_finding(rc.REPO_NO_COMPONENTS_FOUND, "error", message=msg))
             return result
 
     # 3. Analyze each component
@@ -174,8 +212,13 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
 
         source_path = repo_dir / comp_path
         if not source_path.exists():
+            msg = f"Component '{comp_name}': {comp_path} not found"
             result.passed = False
-            result.errors.append(f"Component '{comp_name}': {comp_path} not found")
+            result.errors.append(msg)
+            result.add_finding(make_finding(
+                rc.REPO_COMPONENT_FILE_MISSING, "error",
+                file=comp_path, message=msg,
+            ))
             continue
 
         # Routine components are JSON — validate structure, skip Python analysis
@@ -185,36 +228,77 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
                 with open(source_path) as f:
                     routine_data = json.load(f)
                 if not routine_data.get("trigger_phrases"):
-                    result.warnings.append(f"Routine '{comp_name}': missing trigger_phrases")
+                    msg = f"Routine '{comp_name}': missing trigger_phrases"
+                    result.warnings.append(msg)
+                    result.add_finding(make_finding(
+                        rc.ROUTINE_MISSING_TRIGGER_PHRASES, "warning",
+                        file=comp_path, message=msg,
+                    ))
                 if not routine_data.get("steps"):
-                    result.errors.append(f"Routine '{comp_name}': missing steps")
+                    msg = f"Routine '{comp_name}': missing steps"
+                    result.errors.append(msg)
                     result.passed = False
+                    result.add_finding(make_finding(
+                        rc.ROUTINE_MISSING_STEPS, "error",
+                        file=comp_path, message=msg,
+                    ))
                 if not routine_data.get("response_instruction"):
-                    result.warnings.append(f"Routine '{comp_name}': missing response_instruction")
+                    msg = f"Routine '{comp_name}': missing response_instruction"
+                    result.warnings.append(msg)
+                    result.add_finding(make_finding(
+                        rc.ROUTINE_MISSING_RESPONSE_INSTRUCTION, "warning",
+                        file=comp_path, message=msg,
+                    ))
                 for i, step in enumerate(routine_data.get("steps", [])):
                     if not step.get("command"):
-                        result.errors.append(f"Routine '{comp_name}': step {i+1} missing 'command'")
+                        msg = f"Routine '{comp_name}': step {i+1} missing 'command'"
+                        result.errors.append(msg)
                         result.passed = False
+                        result.add_finding(make_finding(
+                            rc.ROUTINE_STEP_MISSING_COMMAND, "error",
+                            file=comp_path, value=str(i + 1), message=msg,
+                        ))
             except json.JSONDecodeError as e:
+                msg = f"Routine '{comp_name}': invalid JSON: {e}"
                 result.passed = False
-                result.errors.append(f"Routine '{comp_name}': invalid JSON: {e}")
+                result.errors.append(msg)
+                result.add_finding(make_finding(
+                    rc.ROUTINE_INVALID_JSON, "error",
+                    file=comp_path, message=msg,
+                ))
             except Exception as e:
+                msg = f"Routine '{comp_name}': failed to read: {e}"
                 result.passed = False
-                result.errors.append(f"Routine '{comp_name}': failed to read: {e}")
+                result.errors.append(msg)
+                result.add_finding(make_finding(
+                    rc.ROUTINE_INVALID_JSON, "error",
+                    file=comp_path, message=msg,
+                ))
             continue
 
         source = source_path.read_text(encoding="utf-8")
         try:
             tree = ast.parse(source, filename=comp_path)
         except SyntaxError as e:
+            msg = f"SyntaxError in {comp_path}: {e}"
             result.passed = False
-            result.errors.append(f"SyntaxError in {comp_path}: {e}")
+            result.errors.append(msg)
+            result.add_finding(make_finding(
+                rc.STATIC_ANALYSIS_SYNTAX_ERROR, "error",
+                file=comp_path, line=getattr(e, "lineno", None),
+                message=msg,
+            ))
             continue
 
         # Find the expected base class and check methods
         type_info = COMPONENT_TYPE_INFO.get(comp_type)
         if not type_info:
-            result.warnings.append(f"Component '{comp_name}': unknown type '{comp_type}'")
+            msg = f"Component '{comp_name}': unknown type '{comp_type}'"
+            result.warnings.append(msg)
+            result.add_finding(make_finding(
+                rc.REPO_UNKNOWN_COMPONENT_TYPE, "warning",
+                file=comp_path, value=comp_type, message=msg,
+            ))
             continue
 
         base_class_name, required_methods = type_info
@@ -228,34 +312,54 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
                 # and let the container test validate the inheritance chain.
                 any_class = _find_any_class_with_bases(tree)
                 if any_class is None:
+                    msg = f"Component '{comp_name}': no class definition found in {comp_path}"
                     result.passed = False
-                    result.errors.append(
-                        f"Component '{comp_name}': no class definition found in {comp_path}"
-                    )
+                    result.errors.append(msg)
+                    result.add_finding(make_finding(
+                        rc.STATIC_ANALYSIS_MISSING_BASE_CLASS, "error",
+                        file=comp_path, value=base_class_name, message=msg,
+                    ))
                     continue
-                result.warnings.append(
+                msg = (
                     f"Component '{comp_name}': no direct {base_class_name} base class found. "
                     f"Declared jarvis_dependencies={jarvis_deps} — transitive inheritance "
                     f"will be validated in container tests."
                 )
+                result.warnings.append(msg)
+                result.add_finding(make_finding(
+                    rc.STATIC_ANALYSIS_TRANSITIVE_INHERITANCE, "warning",
+                    file=comp_path, value=base_class_name, message=msg,
+                ))
                 target_class = any_class
             else:
+                msg = f"Component '{comp_name}': no class inheriting from {base_class_name} found in {comp_path}"
                 result.passed = False
-                result.errors.append(
-                    f"Component '{comp_name}': no class inheriting from {base_class_name} found in {comp_path}"
-                )
+                result.errors.append(msg)
+                result.add_finding(make_finding(
+                    rc.STATIC_ANALYSIS_MISSING_BASE_CLASS, "error",
+                    file=comp_path, value=base_class_name, message=msg,
+                ))
                 continue
 
         defined_names = _get_class_defined_names(target_class)
         for method in required_methods:
             if method not in defined_names:
-                result.errors.append(f"Component '{comp_name}': missing required method/property: {method}")
+                msg = f"Component '{comp_name}': missing required method/property: {method}"
+                result.errors.append(msg)
                 result.passed = False
+                result.add_finding(make_finding(
+                    rc.MANIFEST_MISSING_REQUIRED_FIELD, "error",
+                    file=comp_path, value=method, message=msg,
+                ))
 
         # Dangerous pattern detection (shared across all types)
         manifest_cmd_name = manifest.get("name") if manifest else None
-        dangerous = _find_dangerous_patterns(tree, command_name=manifest_cmd_name)
+        dangerous, structured = _find_dangerous_patterns(
+            tree, source=source, command_name=manifest_cmd_name, file=comp_path,
+        )
         result.dangerous_patterns.extend(dangerous)
+        for f_ in structured:
+            result.add_finding(f_)
 
     if result.dangerous_patterns:
         result.warnings.append(f"Found {len(result.dangerous_patterns)} potentially dangerous pattern(s)")
@@ -270,14 +374,18 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
         for name in ("README.md", "readme.md", "Readme.md", "README.MD")
     )
     if not readme_found:
-        result.warnings.append("Missing README.md — a README is required for Pantry submission")
+        msg = "Missing README.md — a README is required for Pantry submission"
+        result.warnings.append(msg)
+        result.add_finding(make_finding(rc.REPO_MISSING_README, "warning", message=msg))
 
     license_found = any(
         (repo_dir / name).exists()
         for name in ("LICENSE", "LICENSE.md", "LICENSE.txt", "license", "LICENCE")
     )
     if not license_found:
-        result.warnings.append("Missing LICENSE — a license file is required for Pantry submission")
+        msg = "Missing LICENSE — a license file is required for Pantry submission"
+        result.warnings.append(msg)
+        result.add_finding(make_finding(rc.REPO_MISSING_LICENSE, "warning", message=msg))
 
     # 6. Deep manifest validation
     if manifest:
@@ -312,10 +420,15 @@ def _check_shared_dir_conflicts(
         if entry.name in component_top_dirs:
             continue
         if entry.name in NODE_BUILTIN_PACKAGES and any(entry.rglob("*.py")):
-            result.warnings.append(
+            msg = (
                 f"Shared directory '{entry.name}/' shadows a node built-in package. "
                 f"Rename to something package-specific (e.g., 'shared/' or 'lib/')."
             )
+            result.warnings.append(msg)
+            result.add_finding(make_finding(
+                rc.STATIC_ANALYSIS_SHADOWS_BUILTIN_DIR, "warning",
+                value=entry.name, message=msg,
+            ))
 
 
 def _find_command_class(tree: ast.Module) -> ast.ClassDef | None:
@@ -374,17 +487,48 @@ def _get_class_defined_names(cls: ast.ClassDef) -> set[str]:
     return names
 
 
-def _find_dangerous_patterns(tree: ast.Module, command_name: str | None = None) -> list[str]:
-    """Walk AST and flag dangerous patterns."""
+def _snippet_for_line(source: str | None, line: int | None) -> str | None:
+    """Return the source line at the given 1-based line number, if available."""
+    if source is None or line is None or line < 1:
+        return None
+    lines = source.splitlines()
+    if line > len(lines):
+        return None
+    return lines[line - 1].strip()
+
+
+def _find_dangerous_patterns(
+    tree: ast.Module,
+    *,
+    source: str | None = None,
+    command_name: str | None = None,
+    file: str | None = None,
+) -> tuple[list[str], list[Finding]]:
+    """Walk AST and flag dangerous patterns.
+
+    Returns ``(legacy_strings, structured_findings)`` — the legacy list is kept
+    for back-compat with the ``dangerous_patterns: list[str]`` field; the
+    structured list carries reason_codes + file/line/snippet for the #18 envelope.
+    """
     patterns: list[str] = []
+    findings: list[Finding] = []
     uses_data_repo = False
 
     for node in ast.walk(tree):
+        line = getattr(node, "lineno", None)
+        snippet = _snippet_for_line(source, line)
+
         # Direct calls: eval(), exec(), compile(), __import__()
         if isinstance(node, ast.Call):
             call_name = _get_name(node.func)
             if call_name and call_name in DANGEROUS_CALLS:
                 patterns.append(f"Dangerous call: {call_name}()")
+                primitive = call_name.split(".")[0]
+                findings.append(make_finding(
+                    rc.STATIC_ANALYSIS_DISALLOWED_PRIMITIVE, "warning",
+                    file=file, line=line, snippet=snippet, primitive=primitive,
+                    value=call_name,
+                ))
 
         # Imports
         elif isinstance(node, ast.Import):
@@ -392,16 +536,36 @@ def _find_dangerous_patterns(tree: ast.Module, command_name: str | None = None) 
                 root = alias.name.split(".")[0]
                 if root in DANGEROUS_MODULES:
                     patterns.append(f"Dangerous import: {alias.name}")
+                    findings.append(make_finding(
+                        rc.STATIC_ANALYSIS_DISALLOWED_PRIMITIVE, "warning",
+                        file=file, line=line, snippet=snippet, primitive=root,
+                        value=alias.name,
+                    ))
                 elif root in DATABASE_MODULES:
                     patterns.append(f"Raw database import: {alias.name} (use CommandDataRepository instead)")
+                    findings.append(make_finding(
+                        rc.STATIC_ANALYSIS_RAW_DB_IMPORT, "warning",
+                        file=file, line=line, snippet=snippet, primitive=root,
+                        value=alias.name,
+                    ))
 
         elif isinstance(node, ast.ImportFrom):
             if node.module:
                 root = node.module.split(".")[0]
                 if root in DANGEROUS_MODULES:
                     patterns.append(f"Dangerous import: from {node.module}")
+                    findings.append(make_finding(
+                        rc.STATIC_ANALYSIS_DISALLOWED_PRIMITIVE, "warning",
+                        file=file, line=line, snippet=snippet, primitive=root,
+                        value=node.module,
+                    ))
                 elif root in DATABASE_MODULES:
                     patterns.append(f"Raw database import: from {node.module} (use CommandDataRepository instead)")
+                    findings.append(make_finding(
+                        rc.STATIC_ANALYSIS_RAW_DB_IMPORT, "warning",
+                        file=file, line=line, snippet=snippet, primitive=root,
+                        value=node.module,
+                    ))
                 elif node.module in ALLOWED_DB_IMPORTS:
                     # Sanctioned data access — check what they're importing
                     imported_names = [a.name for a in (node.names or [])]
@@ -414,20 +578,36 @@ def _find_dangerous_patterns(tree: ast.Module, command_name: str | None = None) 
             for kw in SQL_MUTATION_KEYWORDS:
                 if kw in upper:
                     patterns.append(f"SQL mutation detected: contains '{kw}'")
+                    findings.append(make_finding(
+                        rc.STATIC_ANALYSIS_SQL_MUTATION, "warning",
+                        file=file, line=line,
+                        snippet=node.value if len(node.value) < 200 else node.value[:200],
+                        value=kw.strip(),
+                    ))
                     break  # one hit per string is enough
 
     # Check for cross-command data access: calls to repo methods with a
     # command_name string that doesn't match the command's own name
     if uses_data_repo and command_name:
-        cross_access = _check_cross_command_access(tree, command_name)
-        patterns.extend(cross_access)
+        cross_access_legacy, cross_access_findings = _check_cross_command_access(
+            tree, command_name, source=source, file=file,
+        )
+        patterns.extend(cross_access_legacy)
+        findings.extend(cross_access_findings)
 
-    return patterns
+    return patterns, findings
 
 
-def _check_cross_command_access(tree: ast.Module, command_name: str) -> list[str]:
+def _check_cross_command_access(
+    tree: ast.Module,
+    command_name: str,
+    *,
+    source: str | None = None,
+    file: str | None = None,
+) -> tuple[list[str], list[Finding]]:
     """Detect CommandDataRepository calls that use a different command's name."""
     patterns: list[str] = []
+    findings: list[Finding] = []
     repo_methods = {"save", "get", "get_all", "delete", "delete_all"}
 
     for node in ast.walk(tree):
@@ -438,12 +618,23 @@ def _check_cross_command_access(tree: ast.Module, command_name: str) -> list[str
             if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                 accessed_name = node.args[0].value
                 if accessed_name != command_name:
+                    line = getattr(node, "lineno", None)
                     patterns.append(
                         f"Cross-command data access: accesses '{accessed_name}' data "
                         f"(this command is '{command_name}')"
                     )
+                    findings.append(make_finding(
+                        rc.STATIC_ANALYSIS_CROSS_COMMAND_ACCESS, "warning",
+                        file=file, line=line,
+                        snippet=_snippet_for_line(source, line),
+                        value=accessed_name,
+                        message=(
+                            f"Cross-command data access: accesses '{accessed_name}' "
+                            f"data (this command is '{command_name}')"
+                        ),
+                    ))
 
-    return patterns
+    return patterns, findings
 
 
 def _validate_manifest_deep(manifest: dict[str, Any], result: StaticAnalysisResult) -> None:
@@ -451,15 +642,25 @@ def _validate_manifest_deep(manifest: dict[str, Any], result: StaticAnalysisResu
     # Version must be semver
     version = manifest.get("version", "")
     if version and not SEMVER_RE.match(str(version)):
-        result.errors.append(f"Invalid semver version: {version}")
+        msg = f"Invalid semver version: {version}"
+        result.errors.append(msg)
         result.passed = False
+        result.add_finding(make_finding(
+            rc.MANIFEST_BAD_SEMVER, "error",
+            value=str(version), message=msg,
+        ))
 
     # Categories must be valid
     categories = manifest.get("categories", [])
     if isinstance(categories, list):
         for cat in categories:
             if cat not in VALID_CATEGORIES:
-                result.warnings.append(f"Unknown category: {cat}")
+                msg = f"Unknown category: {cat}"
+                result.warnings.append(msg)
+                result.add_finding(make_finding(
+                    rc.MANIFEST_UNKNOWN_CATEGORY, "warning",
+                    value=str(cat), message=msg,
+                ))
 
     # Parameters validation
     parameters = manifest.get("parameters", [])
@@ -468,7 +669,12 @@ def _validate_manifest_deep(manifest: dict[str, Any], result: StaticAnalysisResu
             if isinstance(param, dict):
                 pt = param.get("param_type")
                 if pt and pt not in VALID_PARAM_TYPES:
-                    result.warnings.append(f"Unknown param_type: {pt} for parameter {param.get('name', '?')}")
+                    msg = f"Unknown param_type: {pt} for parameter {param.get('name', '?')}"
+                    result.warnings.append(msg)
+                    result.add_finding(make_finding(
+                        rc.MANIFEST_UNKNOWN_PARAM_TYPE, "warning",
+                        value=str(pt), message=msg,
+                    ))
 
     # Secrets validation
     secrets = manifest.get("secrets", [])
@@ -477,4 +683,9 @@ def _validate_manifest_deep(manifest: dict[str, Any], result: StaticAnalysisResu
             if isinstance(secret, dict):
                 scope = secret.get("scope")
                 if scope and scope not in VALID_SECRET_SCOPES:
-                    result.warnings.append(f"Unknown secret scope: {scope} for key {secret.get('key', '?')}")
+                    msg = f"Unknown secret scope: {scope} for key {secret.get('key', '?')}"
+                    result.warnings.append(msg)
+                    result.add_finding(make_finding(
+                        rc.MANIFEST_UNKNOWN_SECRET_SCOPE, "warning",
+                        value=str(scope), message=msg,
+                    ))
