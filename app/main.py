@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import browse, command_detail, download, forge, forge_drafts, manage, routines, submit, reviews
 from .config import get_settings
+from .services.callback_timeout_watcher import callback_timeout_watcher
 from .services.job_queue import validation_queue
 
 logger = logging.getLogger(__name__)
@@ -36,8 +37,12 @@ async def lifespan(app: FastAPI):
     # Background task: clean expired forge drafts every 5 minutes
     draft_cleanup_task = asyncio.create_task(_draft_cleanup_loop())
 
+    # Background task: retry stalled awaiting_container dispatches (#22)
+    callback_timeout_task = asyncio.create_task(callback_timeout_watcher())
+
     yield
 
+    callback_timeout_task.cancel()
     draft_cleanup_task.cancel()
     await validation_queue.stop()
 

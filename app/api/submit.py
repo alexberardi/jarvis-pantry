@@ -141,7 +141,7 @@ def get_submission_status(
                 "display_name": command.display_name,
                 "version": command.latest_version,
             }
-    elif submission.status == "rejected":
+    elif submission.status in ("rejected", "callback_timeout"):
         result = {
             "reason": submission.error_message or "Unknown",
         }
@@ -170,14 +170,26 @@ def _build_stages(submission: Submission) -> dict:
     status = submission.status
 
     # Status progression: pending → static_analysis → ai_review → container_test →
-    # (awaiting_container if async) → published/rejected
+    # (awaiting_container if async) → published/rejected/callback_timeout
     STAGE_ORDER = [
         "pending", "static_analysis", "ai_review", "container_test",
-        "awaiting_container", "published", "rejected",
+        "awaiting_container", "published", "rejected", "callback_timeout",
     ]
 
     def _stage_status(stage_name: str) -> str:
         """Determine if a stage is done, in_progress, or pending."""
+        if status == "callback_timeout":
+            # The async container test was dispatched but never called back
+            # within the retry window. Mirror the rejected-at-container-test shape.
+            if stage_name == "static_analysis" and submission.static_analysis_result:
+                sa = submission.static_analysis_result
+                return "passed" if sa.get("passed") else "failed"
+            if stage_name == "ai_review":
+                return "passed" if submission.llm_provider else "skipped"
+            if stage_name == "container_test":
+                return "failed"
+            return "pending"
+
         if status == "rejected":
             # Find which stage we were in when rejected
             if stage_name == "static_analysis" and submission.static_analysis_result:

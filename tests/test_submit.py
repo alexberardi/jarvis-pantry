@@ -118,6 +118,28 @@ class TestGetSubmissionStatus:
         assert data["status"] == "published"
         assert data["result"]["command_name"] == "get_stock_price"
 
+    def test_callback_timeout_status(self, client, seed_data, db_session):
+        """Rows in `callback_timeout` (#22) surface through the status endpoint
+        with the error_message intact, peer of rejected."""
+        sub = Submission(
+            id=1,
+            github_repo_url="https://github.com/test/repo",
+            author_id=seed_data["author"].id,
+            status="callback_timeout",
+            error_message="Container test timed out: no callback received after 3 dispatch attempts",
+            static_analysis_result={"passed": True, "checks_passed": 8},
+        )
+        db_session.add(sub)
+        db_session.commit()
+
+        resp = client.get("/v1/submissions/1/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "callback_timeout"
+        # Reason text surfaces (peer of rejected handling).
+        assert data["result"] is not None
+        assert "timed out" in data["result"]["reason"]
+
 
 def _make_fake_repo(tmp_path: Path) -> Path:
     """Create a valid command repo structure for testing."""
