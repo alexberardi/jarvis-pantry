@@ -543,7 +543,183 @@ class TestStaticAnalysisResult:
         assert result.to_dict()["checks_passed"] == 6
 
 
-# ── Jarvis package dependencies (transitive inheritance) ──────────────────
+# ── Structured findings (rejection-reason taxonomy, #18) ────────────────
+
+
+def _findings_with_code(result, code: str) -> list:
+    """Helper: all findings across errors + warnings with the given reason_code."""
+    return [f for f in result.findings if f.reason_code == code]
+
+
+class TestStructuredFindings:
+    """Tests for the new Finding-based structured rejection shape (#18).
+
+    These run alongside the existing flat-string assertions in TestDangerousPatterns
+    and TestManifestValidation. Existing assertions are kept as back-compat coverage;
+    the new envelope is the contract clients will rely on going forward.
+    """
+
+    def test_eval_emits_structured_finding(self, tmp_path):
+        code = VALID_COMMAND + "\n    def extra(self):\n        eval('x')\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        matches = _findings_with_code(result, "static_analysis_disallowed_primitive")
+        assert len(matches) >= 1
+        f = next(m for m in matches if m.primitive == "eval")
+        assert f.severity == "warning"
+        assert f.file is not None and f.file.endswith("command.py")
+        assert f.line is not None and f.line > 30
+        assert f.snippet is not None and "eval" in f.snippet
+        assert f.doc_url.startswith("https://docs.jarvisautomation.dev/")
+
+    def test_subprocess_import_emits_structured_finding(self, tmp_path):
+        code = "import subprocess\n" + VALID_COMMAND
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        matches = _findings_with_code(result, "static_analysis_disallowed_primitive")
+        f = next(m for m in matches if m.primitive == "subprocess")
+        assert f.file is not None and f.file.endswith("command.py")
+        assert f.line == 1
+        assert f.snippet is not None and "subprocess" in f.snippet
+
+    def test_sqlite3_import_emits_structured_finding(self, tmp_path):
+        code = "import sqlite3\n" + VALID_COMMAND
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        matches = _findings_with_code(result, "static_analysis_raw_db_import")
+        assert len(matches) >= 1
+        assert any("sqlite3" in (m.primitive or "") for m in matches)
+
+    def test_sql_mutation_emits_structured_finding(self, tmp_path):
+        code = VALID_COMMAND + '\n    def extra(self):\n        q = "CREATE TABLE x (id INT)"\n'
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        matches = _findings_with_code(result, "static_analysis_sql_mutation")
+        assert len(matches) >= 1
+        # snippet should carry the SQL keyword that tripped detection
+        assert any("CREATE TABLE" in (m.snippet or m.value or "").upper() for m in matches)
+
+    def test_invalid_semver_emits_structured_finding(self, tmp_path):
+        manifest = {"name": "test", "description": "test", "version": "abc"}
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        matches = _findings_with_code(result, "manifest_bad_semver")
+        assert len(matches) == 1
+        f = matches[0]
+        assert f.severity == "error"
+        assert f.value == "abc"
+        assert f.file is None  # manifest-level — no file/line
+        assert f.line is None
+        assert f.doc_url.endswith("#manifest_bad_semver")
+
+    def test_unknown_category_emits_structured_warning(self, tmp_path):
+        manifest = {"name": "test", "description": "test", "version": "1.0.0", "categories": ["bogus"]}
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is True
+        matches = _findings_with_code(result, "manifest_unknown_category")
+        assert len(matches) == 1
+        assert matches[0].severity == "warning"
+        assert matches[0].value == "bogus"
+
+    def test_missing_required_method_emits_structured_finding(self, tmp_path):
+        code = """\
+from jarvis_command_sdk import IJarvisCommand
+
+class Incomplete(IJarvisCommand):
+    pass
+"""
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        matches = _findings_with_code(result, "manifest_missing_required_field")
+        assert len(matches) >= 1
+        assert all(m.severity == "error" for m in matches)
+
+    def test_cross_command_data_access_emits_structured_finding(self, tmp_path):
+        code = """\
+from repositories.command_data_repository import CommandDataRepository
+from db import SessionLocal
+""" + VALID_COMMAND + """
+    def extra(self):
+        db = SessionLocal()
+        repo = CommandDataRepository(db)
+        data = repo.get("other_command", "some_key")
+"""
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        matches = _findings_with_code(result, "static_analysis_cross_command_access")
+        assert len(matches) >= 1
+        assert matches[0].value == "other_command"
+
+    def test_multiple_findings_in_one_run_are_all_captured(self, tmp_path):
+        code = "import subprocess\n" + VALID_COMMAND + "\n    def extra(self):\n        eval('x')\n"
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        matches = _findings_with_code(result, "static_analysis_disallowed_primitive")
+        primitives = {m.primitive for m in matches}
+        assert "subprocess" in primitives
+        assert "eval" in primitives
+
+    def test_reason_codes_envelope_deduplicates(self, tmp_path):
+        code = (
+            VALID_COMMAND
+            + "\n    def extra(self):\n        eval('a')\n        eval('b')\n"
+        )
+        repo = _make_repo(tmp_path, code)
+        result = run_static_analysis(repo)
+        d = result.to_dict()
+        # reason_codes is a deduplicated set-like list
+        assert d["reason_codes"].count("static_analysis_disallowed_primitive") == 1
+
+    def test_clean_command_has_no_findings(self, tmp_path):
+        repo = _make_repo(tmp_path, VALID_COMMAND)
+        result = run_static_analysis(repo)
+        assert result.findings == []
+        assert result.to_dict()["reason_codes"] == []
+
+    def test_bundle_finding_carries_component_file_path(self, tmp_path):
+        repo = _make_bundle_repo(tmp_path, [
+            {"type": "command", "name": "turn_lights", "path": "commands/turn_lights/command.py"},
+        ])
+        (repo / "commands" / "turn_lights").mkdir(parents=True)
+        bad_code = VALID_COMMAND + "\n    def extra(self):\n        eval('x')\n"
+        (repo / "commands" / "turn_lights" / "command.py").write_text(bad_code)
+
+        result = run_static_analysis(repo)
+        matches = _findings_with_code(result, "static_analysis_disallowed_primitive")
+        f = next(m for m in matches if m.primitive == "eval")
+        assert f.file == "commands/turn_lights/command.py"
+
+
+class TestStaticAnalysisResultNewEnvelope:
+    """The to_dict() envelope now includes findings + reason_codes alongside legacy keys."""
+
+    def test_to_dict_includes_findings_and_reason_codes(self):
+        from app.services.rejection_codes import Finding, doc_url
+        finding = Finding(
+            reason_code="manifest_bad_semver",
+            severity="error",
+            value="abc",
+            doc_url=doc_url("manifest_bad_semver"),
+        )
+        result = StaticAnalysisResult(passed=False)
+        result.findings.append(finding)
+        result.errors.append("Invalid semver version: abc")  # legacy mirror
+        d = result.to_dict()
+        assert "findings" in d
+        assert "reason_codes" in d
+        assert d["reason_codes"] == ["manifest_bad_semver"]
+        assert d["findings"][0]["reason_code"] == "manifest_bad_semver"
+        assert d["findings"][0]["value"] == "abc"
+
+    def test_to_dict_keeps_legacy_keys_for_back_compat(self):
+        # Existing consumers (old DB rows, old client parsers) still see the flat-string keys.
+        result = StaticAnalysisResult(passed=True, warnings=["w1"], dangerous_patterns=["eval()"])
+        d = result.to_dict()
+        assert d["warnings"] == ["w1"]
+        assert d["dangerous_patterns"] == ["eval()"]
+
 
 
 TRANSITIVE_PROTOCOL = """\

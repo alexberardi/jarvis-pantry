@@ -326,7 +326,11 @@ class TestQuickSubmit:
         assert resp.status_code == 422
         detail = resp.json()["detail"]
         assert "Static analysis failed" in detail["message"]
-        assert any("SyntaxError" in e for e in detail["errors"])
+        # New envelope (#18) — findings list with structured items, no flat `errors` key
+        assert any(
+            "SyntaxError" in (f.get("message") or f.get("snippet") or "")
+            for f in detail.get("findings", [])
+        )
         _teardown_quick_submit_auth()
 
     @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
@@ -470,3 +474,214 @@ class TestContainerResultCallback:
             json={"passed": True, "summary": "ok"},
         )
         assert resp.status_code == 409
+
+
+# ── Structured rejection envelope (#18) ─────────────────────────────────
+
+
+class TestRejectionEnvelopeShape:
+    """422 response on static-analysis failure carries the new structured envelope.
+
+    Per #18 — hard cut: no `errors_legacy`, no flat-string `errors: [string]`.
+    Per Alex's resolution on #18 thread.
+    """
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    def test_static_analysis_failure_returns_new_envelope(
+        self, mock_clone, mock_settings, mock_verify, client, seed_data, tmp_path
+    ):
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
+        settings.max_concurrent_clones = 5
+
+        repo = tmp_path / "repo"
+        repo.mkdir(parents=True)
+        manifest = {"name": "bad_cmd", "description": "Bad", "version": "abc"}  # bad semver
+        (repo / "jarvis_command.yaml").write_text(yaml.dump(manifest))
+        (repo / "command.py").write_text("def broken(:\n  pass")  # SyntaxError
+        (repo / "README.md").write_text("# Test")
+        (repo / "LICENSE").write_text("MIT")
+        mock_clone.return_value = repo
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/bad-command",
+        })
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+
+        # New envelope keys
+        assert detail["result"] == "rejected"
+        assert "reason_codes" in detail
+        assert "findings" in detail
+        assert "warnings" in detail
+        assert "message" in detail
+
+        # Hard cut — old keys are gone from the wire shape
+        assert "errors" not in detail
+        assert "dangerous_patterns" not in detail
+        assert "errors_legacy" not in detail
+
+        # findings is a list of dicts with reason_code + severity + doc_url
+        assert isinstance(detail["findings"], list)
+        for f in detail["findings"]:
+            assert "reason_code" in f
+            assert "severity" in f
+            assert "doc_url" in f
+            assert f["doc_url"].startswith("https://docs.jarvisautomation.dev/")
+
+        # reason_codes deduplicates
+        assert len(detail["reason_codes"]) == len(set(detail["reason_codes"]))
+
+        _teardown_quick_submit_auth()
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    def test_clean_submission_has_no_envelope_churn(
+        self, mock_clone, mock_settings, mock_verify, client, seed_data, tmp_path
+    ):
+        """Regression: clean submission still returns 200 with the old preview shape."""
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
+        settings.max_concurrent_clones = 5
+
+        repo = _make_fake_repo(tmp_path)
+        mock_clone.return_value = repo
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "preview"
+        assert "findings" not in data
+        assert "reason_codes" not in data
+        _teardown_quick_submit_auth()
+
+
+class TestSubmissionStatusDualShape:
+    """The /status reader handles both new-shape and legacy-shape stored JSON.
+
+    Per Alex's resolution on #18: no retro re-running. Old rows keep their shape;
+    the reader normalizes them on read.
+    """
+
+    def test_new_shape_row_serves_through_status_endpoint(self, client, seed_data, db_session):
+        sub = Submission(
+            id=10,
+            github_repo_url="https://github.com/test/repo",
+            author_id=seed_data["author"].id,
+            status="ai_review",
+            llm_provider="claude",
+            static_analysis_result={
+                "passed": True,
+                "findings": [],
+                "warnings": [],
+                "dangerous_patterns": [],
+                "errors": [],
+                "reason_codes": [],
+                "checks_passed": 8,
+            },
+        )
+        db_session.add(sub)
+        db_session.commit()
+
+        resp = client.get(f"/v1/submissions/{sub.id}/status")
+        assert resp.status_code == 200
+        sa = resp.json()["stages"]["static_analysis"]
+        assert sa["status"] == "passed"
+        assert sa["findings"] == []
+        assert sa["reason_codes"] == []
+
+    def test_legacy_shape_row_wraps_into_new_envelope(self, client, seed_data, db_session):
+        """A pre-cutover row stored with flat strings wraps to legacy_unstructured findings."""
+        sub = Submission(
+            id=11,
+            github_repo_url="https://github.com/test/repo",
+            author_id=seed_data["author"].id,
+            status="rejected",
+            static_analysis_result={
+                "passed": False,
+                "errors": ["Component 'x': missing required method/property: run"],
+                "warnings": ["Unknown category: foo"],
+                "dangerous_patterns": ["Dangerous call: eval()"],
+                "checks_passed": 4,
+            },
+        )
+        db_session.add(sub)
+        db_session.commit()
+
+        resp = client.get(f"/v1/submissions/{sub.id}/status")
+        assert resp.status_code == 200
+        sa = resp.json()["stages"]["static_analysis"]
+
+        # Wrapped legacy strings appear as findings with reason_code=legacy_unstructured
+        all_findings = sa.get("findings", []) + sa.get("warnings", [])
+        legacy_findings = [f for f in all_findings if isinstance(f, dict) and f.get("reason_code") == "legacy_unstructured"]
+        assert len(legacy_findings) >= 1
+        # Each carries the original string in `message`
+        messages = [f.get("message", "") for f in legacy_findings]
+        assert any("missing required method" in m for m in messages)
+
+    def test_legacy_row_with_no_failures_serves_clean(self, client, seed_data, db_session):
+        sub = Submission(
+            id=12,
+            github_repo_url="https://github.com/test/repo",
+            author_id=seed_data["author"].id,
+            status="published",
+            static_analysis_result={
+                "passed": True,
+                "errors": [],
+                "warnings": [],
+                "dangerous_patterns": [],
+                "checks_passed": 8,
+            },
+        )
+        db_session.add(sub)
+        db_session.commit()
+
+        resp = client.get(f"/v1/submissions/{sub.id}/status")
+        assert resp.status_code == 200
+        sa = resp.json()["stages"]["static_analysis"]
+        assert sa.get("findings", []) == []
+        assert sa.get("warnings", []) == []
+
+    def test_null_static_analysis_result_serves_clean(self, client, seed_data, db_session):
+        sub = Submission(
+            id=13,
+            github_repo_url="https://github.com/test/repo",
+            author_id=seed_data["author"].id,
+            status="pending",
+            static_analysis_result=None,
+        )
+        db_session.add(sub)
+        db_session.commit()
+
+        resp = client.get(f"/v1/submissions/{sub.id}/status")
+        assert resp.status_code == 200
+        # Endpoint doesn't 500; the static_analysis stage is still present
+        assert "static_analysis" in resp.json()["stages"]
+
+    def test_malformed_legacy_row_does_not_500(self, client, seed_data, db_session):
+        sub = Submission(
+            id=14,
+            github_repo_url="https://github.com/test/repo",
+            author_id=seed_data["author"].id,
+            status="rejected",
+            # Intentionally malformed — `errors` is a string, not a list
+            static_analysis_result={"passed": False, "errors": "not a list", "warnings": [], "checks_passed": 0},
+        )
+        db_session.add(sub)
+        db_session.commit()
+
+        resp = client.get(f"/v1/submissions/{sub.id}/status")
+        # Contract: must not 500
+        assert resp.status_code == 200
