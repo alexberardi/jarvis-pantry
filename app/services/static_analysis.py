@@ -75,6 +75,19 @@ DANGEROUS_CALLS: set[str] = {
     "subprocess.check_call", "subprocess.check_output",
 }
 
+# Calls whose presence is a hard rejection (not just a warning). Subset of
+# DANGEROUS_CALLS — submissions invoking any of these are rejected outright.
+# `compile` and `__import__` remain warn-only.
+HARD_FAIL_CALLS: set[str] = {
+    "eval", "exec",
+    "os.system", "os.popen",
+    "os.exec", "os.execl", "os.execle", "os.execlp",
+    "os.execv", "os.execve", "os.execvp", "os.execvpe",
+    "os.spawn", "os.spawnl", "os.spawnle",
+    "subprocess.run", "subprocess.call", "subprocess.Popen",
+    "subprocess.check_call", "subprocess.check_output",
+}
+
 # Database modules — flagged because commands should use CommandDataRepository
 DATABASE_MODULES: set[str] = {"sqlite3", "sqlalchemy", "alembic", "psycopg2", "asyncpg", "aiosqlite", "peewee"}
 
@@ -254,7 +267,7 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
 
         # Dangerous pattern detection (shared across all types)
         manifest_cmd_name = manifest.get("name") if manifest else None
-        dangerous = _find_dangerous_patterns(tree, command_name=manifest_cmd_name)
+        dangerous = _find_dangerous_patterns(tree, command_name=manifest_cmd_name, result=result)
         result.dangerous_patterns.extend(dangerous)
 
     if result.dangerous_patterns:
@@ -374,8 +387,16 @@ def _get_class_defined_names(cls: ast.ClassDef) -> set[str]:
     return names
 
 
-def _find_dangerous_patterns(tree: ast.Module, command_name: str | None = None) -> list[str]:
-    """Walk AST and flag dangerous patterns."""
+def _find_dangerous_patterns(
+    tree: ast.Module,
+    command_name: str | None = None,
+    result: StaticAnalysisResult | None = None,
+) -> list[str]:
+    """Walk AST and flag dangerous patterns.
+
+    When ``result`` is provided, calls matching ``HARD_FAIL_CALLS`` also flip
+    ``result.passed`` to False and append a structured error message.
+    """
     patterns: list[str] = []
     uses_data_repo = False
 
@@ -385,6 +406,12 @@ def _find_dangerous_patterns(tree: ast.Module, command_name: str | None = None) 
             call_name = _get_name(node.func)
             if call_name and call_name in DANGEROUS_CALLS:
                 patterns.append(f"Dangerous call: {call_name}()")
+                if result is not None and call_name in HARD_FAIL_CALLS:
+                    result.passed = False
+                    result.errors.append(
+                        f"Disallowed primitive: {call_name}() — "
+                        f"submissions must not use this. See docs."
+                    )
 
         # Imports
         elif isinstance(node, ast.Import):
