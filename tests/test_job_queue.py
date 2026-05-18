@@ -199,3 +199,142 @@ class TestLockfileDispatch:
         # Empty-string lockfile (GHA inputs are strings — None would serialize awkwardly)
         assert kwargs.get("lockfile_content") == ""
         assert "packages" not in kwargs
+
+
+# ── awaiting_container stamping (#22) ───────────────────────────────────
+
+
+class TestAwaitingContainerStamping:
+    """At the awaiting_container transition, the worker stamps
+    `awaiting_container_since` and increments `dispatch_attempts`."""
+
+    @pytest.mark.asyncio
+    async def test_dispatch_stamps_awaiting_container_since(
+        self, db_session_factory, tmp_path,
+    ):
+        session = db_session_factory()
+        _seed_author_and_submission(session, resolved_lockfile=None)
+        session.close()
+
+        # Async (pending) dispatch: returns no result, signals awaiting_container.
+        dispatch_mock = AsyncMock(return_value=RunnerDispatch(
+            result=None,
+            external_run_url="https://github.com/x/y/actions/runs/1",
+            callback_token="tok",
+        ))
+        fake_runner = MagicMock()
+        fake_runner.dispatch = dispatch_mock
+
+        job = SubmissionJob(
+            submission_id=99,
+            repo_dir=tmp_path,
+            manifest={"name": "test", "version": "1.0.0"},
+            llm_provider="claude",
+            llm_api_key="",  # skip AI review
+            author_github="alice",
+            repo_url="https://github.com/test/repo",
+        )
+
+        with patch("app.services.job_queue.SessionLocal", db_session_factory), \
+             patch("app.services.job_queue.get_runner", return_value=fake_runner), \
+             patch("app.services.job_queue.cleanup_repo"):
+            queue = ValidationQueue(max_workers=1)
+            await queue._process_job(job, worker_id=0)
+
+        # Reload via a fresh session.
+        verify = db_session_factory()
+        sub = verify.query(Submission).filter(Submission.id == 99).first()
+        assert sub.status == "awaiting_container"
+        assert sub.awaiting_container_since is not None
+        assert sub.dispatch_attempts == 1
+        verify.close()
+
+    @pytest.mark.asyncio
+    async def test_dispatch_increments_existing_attempts(
+        self, db_session_factory, tmp_path,
+    ):
+        # Pre-existing row with attempts=2 (e.g. the watcher previously retried,
+        # and now the worker is somehow processing the row again).
+        session = db_session_factory()
+        author = Author(id=1, github_id=10, github_username="alice")
+        session.add(author)
+        sub = Submission(
+            id=99,
+            github_repo_url="https://github.com/test/repo",
+            author_id=1,
+            status="container_test",
+            dispatch_attempts=2,
+        )
+        session.add(sub)
+        session.commit()
+        session.close()
+
+        dispatch_mock = AsyncMock(return_value=RunnerDispatch(
+            result=None,
+            external_run_url="https://github.com/x/y/actions/runs/2",
+            callback_token="tok2",
+        ))
+        fake_runner = MagicMock()
+        fake_runner.dispatch = dispatch_mock
+
+        job = SubmissionJob(
+            submission_id=99,
+            repo_dir=tmp_path,
+            manifest={"name": "test", "version": "1.0.0"},
+            llm_provider="claude",
+            llm_api_key="",
+            author_github="alice",
+            repo_url="https://github.com/test/repo",
+        )
+
+        with patch("app.services.job_queue.SessionLocal", db_session_factory), \
+             patch("app.services.job_queue.get_runner", return_value=fake_runner), \
+             patch("app.services.job_queue.cleanup_repo"):
+            queue = ValidationQueue(max_workers=1)
+            await queue._process_job(job, worker_id=0)
+
+        verify = db_session_factory()
+        sub = verify.query(Submission).filter(Submission.id == 99).first()
+        assert sub.dispatch_attempts == 3
+        verify.close()
+
+    @pytest.mark.asyncio
+    async def test_synchronous_runner_does_not_stamp(
+        self, db_session_factory, tmp_path,
+    ):
+        # LocalRunner returns a result inline (pending=False) — never reaches
+        # the awaiting_container branch. Verify the stamp stays None.
+        session = db_session_factory()
+        _seed_author_and_submission(session, resolved_lockfile=None)
+        session.close()
+
+        dispatch_mock = AsyncMock(return_value=RunnerDispatch(
+            result=ContainerTestResult(
+                passed=True, summary="ok", test_count=0, pass_count=0, fail_count=0,
+            ),
+        ))
+        fake_runner = MagicMock()
+        fake_runner.dispatch = dispatch_mock
+
+        job = SubmissionJob(
+            submission_id=99,
+            repo_dir=tmp_path,
+            manifest={"name": "test", "version": "1.0.0"},
+            llm_provider="claude",
+            llm_api_key="",
+            author_github="alice",
+            repo_url="https://github.com/test/repo",
+        )
+
+        with patch("app.services.job_queue.SessionLocal", db_session_factory), \
+             patch("app.services.job_queue.get_runner", return_value=fake_runner), \
+             patch("app.services.job_queue.finalize_submission"), \
+             patch("app.services.job_queue.cleanup_repo"):
+            queue = ValidationQueue(max_workers=1)
+            await queue._process_job(job, worker_id=0)
+
+        verify = db_session_factory()
+        sub = verify.query(Submission).filter(Submission.id == 99).first()
+        assert sub.awaiting_container_since is None
+        assert sub.dispatch_attempts == 0  # untouched default
+        verify.close()
