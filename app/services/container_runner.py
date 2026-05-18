@@ -7,7 +7,6 @@ via the `/v1/submissions/{id}/container-result` callback.
 
 from __future__ import annotations
 
-import json
 import logging
 import secrets
 from dataclasses import dataclass
@@ -18,6 +17,7 @@ import httpx
 
 from ..config import get_settings
 from .container_test import ContainerTestResult, run_container_tests
+from .lockfile_resolver import lockfile_to_package_specs
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class ContainerTestRunner(Protocol):
         *,
         command_dir: Path,
         submission_id: int,
-        packages: list[str] | None,
+        lockfile_content: str,
         is_bundle: bool,
         repo_url: str,
     ) -> RunnerDispatch: ...
@@ -60,10 +60,13 @@ class LocalRunner:
         *,
         command_dir: Path,
         submission_id: int,
-        packages: list[str] | None,
+        lockfile_content: str,
         is_bundle: bool,
         repo_url: str,
     ) -> RunnerDispatch:
+        # Local Docker runner builds a Dockerfile that pip-installs each spec.
+        # Parse the lockfile back into explicit specs.
+        packages = lockfile_to_package_specs(lockfile_content)
         result = await run_container_tests(
             command_dir=command_dir,
             submission_id=submission_id,
@@ -91,7 +94,7 @@ class GitHubActionsRunner:
         *,
         command_dir: Path,
         submission_id: int,
-        packages: list[str] | None,
+        lockfile_content: str,
         is_bundle: bool,
         repo_url: str,
     ) -> RunnerDispatch:
@@ -119,7 +122,7 @@ class GitHubActionsRunner:
                 "callback_url": callback_url,
                 "callback_token": token,
                 "is_bundle": "true" if is_bundle else "false",
-                "packages": json.dumps(packages or []),
+                "lockfile_content": lockfile_content or "",
             },
         }
 

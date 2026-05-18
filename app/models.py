@@ -188,3 +188,6 @@ class Submission(Base):
     external_run_url = Column(String(512), nullable=True)
     callback_token = Column(String(64), nullable=True)
     dispatch_context = Column(JSON, nullable=True)
+    # Frozen lockfile (`uv pip compile` output) resolved at submission acceptance.
+    # The runner installs from this verbatim — no live PyPI resolution at run time.
+    resolved_lockfile = Column(Text, nullable=True)

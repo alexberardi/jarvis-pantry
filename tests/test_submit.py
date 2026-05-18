@@ -1,7 +1,8 @@
 """Tests for the submission endpoints."""
 
+import subprocess
 from pathlib import Path
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
 import yaml
 
@@ -685,3 +686,420 @@ class TestSubmissionStatusDualShape:
         resp = client.get(f"/v1/submissions/{sub.id}/status")
         # Contract: must not 500
         assert resp.status_code == 200
+
+
+# ── Lockfile resolution at submission acceptance (#21) ──────────────────
+
+
+def _make_fake_repo_with_packages(tmp_path: Path, packages: list[dict]) -> Path:
+    """Extends _make_fake_repo with a `packages:` field on the manifest."""
+    repo = _make_fake_repo(tmp_path)
+    manifest_path = repo / "jarvis_command.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest["packages"] = packages
+    manifest_path.write_text(yaml.dump(manifest))
+    return repo
+
+
+_HAPPY_LOCKFILE = (
+    "requests==2.31.0 --hash=sha256:abc\n"
+    "pyyaml==6.0 --hash=sha256:def\n"
+)
+
+
+def _ok_proc(stdout: str = _HAPPY_LOCKFILE, stderr: str = "") -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(
+        args=["uv", "pip", "compile"], returncode=0, stdout=stdout, stderr=stderr,
+    )
+
+
+def _fail_proc(stderr: str = "ERROR: No matching distribution") -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(
+        args=["uv", "pip", "compile"], returncode=1, stdout="", stderr=stderr,
+    )
+
+
+class TestLockfileResolution:
+    """Synchronous resolver invocation on the quick-submit acceptance path.
+
+    Resolver lives at app.services.lockfile_resolver.resolve_lockfile() —
+    a thin wrapper around `uv pip compile`. Tests patch the wrapper, not
+    the subprocess, so the contract is the helper's behavior (returns a
+    string lockfile, raises on failure / oversize).
+    """
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.validation_queue")
+    @patch("app.api.submit.resolve_lockfile")
+    def test_resolves_lockfile_for_manifest_with_packages(
+        self, mock_resolve, mock_queue, mock_clone, mock_settings, mock_verify,
+        client, seed_data, db_session, tmp_path,
+    ):
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
+
+        repo = _make_fake_repo_with_packages(
+            tmp_path, [{"name": "requests"}, {"name": "pyyaml"}],
+        )
+        mock_clone.return_value = repo
+        mock_queue.enqueue = AsyncMock()
+        mock_resolve.return_value = _HAPPY_LOCKFILE
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            "confirm": True,
+        })
+        assert resp.status_code == 200
+
+        # Submission row persists the resolved lockfile
+        sub = db_session.query(Submission).order_by(Submission.id.desc()).first()
+        assert sub is not None
+        assert sub.resolved_lockfile == _HAPPY_LOCKFILE
+
+        # Resolver was invoked exactly once with the package names
+        assert mock_resolve.call_count == 1
+        args, kwargs = mock_resolve.call_args
+        called_with = args[0] if args else kwargs.get("packages")
+        assert list(called_with) == ["requests", "pyyaml"]
+        _teardown_quick_submit_auth()
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.validation_queue")
+    @patch("app.api.submit.resolve_lockfile")
+    def test_empty_packages_list_skips_resolver(
+        self, mock_resolve, mock_queue, mock_clone, mock_settings, mock_verify,
+        client, seed_data, db_session, tmp_path,
+    ):
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
+
+        repo = _make_fake_repo_with_packages(tmp_path, [])
+        mock_clone.return_value = repo
+        mock_queue.enqueue = AsyncMock()
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            "confirm": True,
+        })
+        assert resp.status_code == 200
+        sub = db_session.query(Submission).order_by(Submission.id.desc()).first()
+        # Stored lockfile is empty (or None) when no packages declared
+        assert not sub.resolved_lockfile
+        assert mock_resolve.call_count == 0
+        _teardown_quick_submit_auth()
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.validation_queue")
+    @patch("app.api.submit.resolve_lockfile")
+    def test_no_packages_key_skips_resolver(
+        self, mock_resolve, mock_queue, mock_clone, mock_settings, mock_verify,
+        client, seed_data, db_session, tmp_path,
+    ):
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
+
+        repo = _make_fake_repo(tmp_path)  # no packages key
+        mock_clone.return_value = repo
+        mock_queue.enqueue = AsyncMock()
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            "confirm": True,
+        })
+        assert resp.status_code == 200
+        assert mock_resolve.call_count == 0
+        _teardown_quick_submit_auth()
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.resolve_lockfile")
+    def test_preview_dry_run_skips_resolver(
+        self, mock_resolve, mock_clone, mock_settings, mock_verify,
+        client, seed_data, tmp_path,
+    ):
+        """Preview path (confirm=false) does NOT invoke the resolver — resolution
+        is part of acceptance, not preview."""
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
+
+        repo = _make_fake_repo_with_packages(tmp_path, [{"name": "requests"}])
+        mock_clone.return_value = repo
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            # confirm omitted → default False (dry run)
+        })
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "preview"
+        assert mock_resolve.call_count == 0
+        _teardown_quick_submit_auth()
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.validation_queue")
+    @patch("app.api.submit.resolve_lockfile")
+    def test_lockfile_exactly_at_cap_passes(
+        self, mock_resolve, mock_queue, mock_clone, mock_settings, mock_verify,
+        client, seed_data, db_session, tmp_path,
+    ):
+        """A resolved lockfile of exactly 50KB (51200 bytes) is accepted."""
+        from app.services.lockfile_resolver import LOCKFILE_SIZE_CAP_BYTES
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
+
+        repo = _make_fake_repo_with_packages(tmp_path, [{"name": "requests"}])
+        mock_clone.return_value = repo
+        mock_queue.enqueue = AsyncMock()
+        mock_resolve.return_value = "a" * LOCKFILE_SIZE_CAP_BYTES
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            "confirm": True,
+        })
+        assert resp.status_code == 200
+        sub = db_session.query(Submission).order_by(Submission.id.desc()).first()
+        assert sub is not None
+        assert len(sub.resolved_lockfile) == LOCKFILE_SIZE_CAP_BYTES
+        _teardown_quick_submit_auth()
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.resolve_lockfile")
+    def test_lockfile_one_byte_over_cap_rejected(
+        self, mock_resolve, mock_clone, mock_settings, mock_verify,
+        client, seed_data, db_session, tmp_path,
+    ):
+        """One byte over the cap triggers a structured rejection."""
+        from app.services.lockfile_resolver import (
+            LOCKFILE_SIZE_CAP_BYTES,
+            LockfileTooLargeError,
+        )
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
+
+        repo = _make_fake_repo_with_packages(tmp_path, [{"name": "requests"}])
+        mock_clone.return_value = repo
+        oversize = "a" * (LOCKFILE_SIZE_CAP_BYTES + 1)
+        mock_resolve.side_effect = LockfileTooLargeError(
+            f"Resolved lockfile is {len(oversize)} bytes, exceeds {LOCKFILE_SIZE_CAP_BYTES}",
+        )
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            "confirm": True,
+        })
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail["result"] == "rejected"
+        assert "resolved_lockfile_exceeds_size_cap" in detail["reason_codes"]
+        # No half-baked submission row
+        assert db_session.query(Submission).count() == 0
+        _teardown_quick_submit_auth()
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.resolve_lockfile")
+    def test_resolver_failure_emits_structured_rejection(
+        self, mock_resolve, mock_clone, mock_settings, mock_verify,
+        client, seed_data, db_session, tmp_path,
+    ):
+        """uv pip compile non-zero exit → 422 with lockfile_resolution_failed."""
+        from app.services.lockfile_resolver import LockfileResolutionError
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
+
+        repo = _make_fake_repo_with_packages(tmp_path, [{"name": "nonexistent-pkg"}])
+        mock_clone.return_value = repo
+        mock_resolve.side_effect = LockfileResolutionError(
+            "ERROR: No matching distribution found for nonexistent-pkg",
+        )
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            "confirm": True,
+        })
+        assert resp.status_code == 422
+        detail = resp.json()["detail"]
+        assert detail["result"] == "rejected"
+        assert "lockfile_resolution_failed" in detail["reason_codes"]
+        # Some message hint is surfaced for the author
+        msg_blob = detail.get("message", "") + " " + " ".join(
+            f.get("message", "") or "" for f in detail.get("findings", [])
+        )
+        assert "nonexistent-pkg" in msg_blob or "No matching" in msg_blob
+        # No half-baked submission row
+        assert db_session.query(Submission).count() == 0
+        _teardown_quick_submit_auth()
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.validation_queue")
+    @patch("app.api.submit.resolve_lockfile")
+    def test_bundle_manifest_with_packages_resolves_once(
+        self, mock_resolve, mock_queue, mock_clone, mock_settings, mock_verify,
+        client, seed_data, db_session, tmp_path,
+    ):
+        """A bundle with components + top-level packages resolves a single lockfile."""
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
+
+        repo = _make_fake_repo_with_packages(tmp_path, [{"name": "requests"}])
+        # Add a component declaration so it looks like a bundle
+        manifest_path = repo / "jarvis_command.yaml"
+        manifest = yaml.safe_load(manifest_path.read_text())
+        manifest["components"] = [
+            {"name": "test_quick", "type": "command", "path": "command.py"},
+        ]
+        manifest_path.write_text(yaml.dump(manifest))
+        mock_clone.return_value = repo
+        mock_queue.enqueue = AsyncMock()
+        mock_resolve.return_value = _HAPPY_LOCKFILE
+
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            "confirm": True,
+        })
+        assert resp.status_code == 200
+        assert mock_resolve.call_count == 1
+        args, kwargs = mock_resolve.call_args
+        called_with = args[0] if args else kwargs.get("packages")
+        assert list(called_with) == ["requests"]
+        _teardown_quick_submit_auth()
+
+
+class TestLockfileResolverHelper:
+    """Direct unit tests on app.services.lockfile_resolver.resolve_lockfile()."""
+
+    def test_returns_lockfile_string_on_success(self):
+        from app.services import lockfile_resolver
+        with patch("app.services.lockfile_resolver.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["uv", "pip", "compile"], returncode=0,
+                stdout=_HAPPY_LOCKFILE, stderr="",
+            )
+            result = lockfile_resolver.resolve_lockfile(["requests", "pyyaml"])
+        assert result == _HAPPY_LOCKFILE
+        # Subprocess was called with uv + the package names
+        args, kwargs = mock_run.call_args
+        cmd = args[0] if args else kwargs.get("args")
+        assert "uv" in cmd[0] or cmd[0] == "uv"
+        assert "pip" in cmd
+        assert "compile" in cmd
+        assert "requests" in cmd
+        assert "pyyaml" in cmd
+
+    def test_empty_packages_returns_empty_string_without_subprocess(self):
+        from app.services import lockfile_resolver
+        with patch("app.services.lockfile_resolver.subprocess.run") as mock_run:
+            result = lockfile_resolver.resolve_lockfile([])
+        assert result == ""
+        assert mock_run.call_count == 0
+
+    def test_raises_resolution_error_on_non_zero_exit(self):
+        from app.services import lockfile_resolver
+        with patch("app.services.lockfile_resolver.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["uv"], returncode=1, stdout="",
+                stderr="ERROR: No matching distribution found for nonexistent-pkg",
+            )
+            try:
+                lockfile_resolver.resolve_lockfile(["nonexistent-pkg"])
+            except lockfile_resolver.LockfileResolutionError as e:
+                assert "nonexistent-pkg" in str(e) or "No matching" in str(e)
+            else:
+                raise AssertionError("expected LockfileResolutionError")
+
+    def test_raises_too_large_on_oversize_output(self):
+        from app.services import lockfile_resolver
+        oversize = "a" * (lockfile_resolver.LOCKFILE_SIZE_CAP_BYTES + 1)
+        with patch("app.services.lockfile_resolver.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["uv"], returncode=0, stdout=oversize, stderr="",
+            )
+            try:
+                lockfile_resolver.resolve_lockfile(["requests"])
+            except lockfile_resolver.LockfileTooLargeError:
+                pass
+            else:
+                raise AssertionError("expected LockfileTooLargeError")
+
+    def test_raises_resolution_error_on_subprocess_timeout(self):
+        from app.services import lockfile_resolver
+        with patch("app.services.lockfile_resolver.subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="uv", timeout=30)
+            try:
+                lockfile_resolver.resolve_lockfile(["requests"])
+            except lockfile_resolver.LockfileResolutionError:
+                pass
+            else:
+                raise AssertionError("expected LockfileResolutionError on timeout")
+
+    def test_propagates_filenotfound_when_uv_missing(self):
+        from app.services import lockfile_resolver
+        with patch("app.services.lockfile_resolver.subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError("uv")
+            try:
+                lockfile_resolver.resolve_lockfile(["requests"])
+            except FileNotFoundError:
+                pass
+            except lockfile_resolver.LockfileResolutionError:
+                pass
+            else:
+                raise AssertionError(
+                    "expected FileNotFoundError or LockfileResolutionError",
+                )
+
+    def test_cap_constant_is_50kb(self):
+        from app.services import lockfile_resolver
+        assert lockfile_resolver.LOCKFILE_SIZE_CAP_BYTES == 50 * 1024
