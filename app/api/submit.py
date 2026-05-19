@@ -13,7 +13,7 @@ from ..auth import validate_github_token
 from ..config import get_settings
 from ..db import get_db
 from ..models import Author, Command, CommandVersion, Submission
-from ..rate_limiter import RateLimiter
+from ..rate_limiter import RateLimiter, _submission_cap_per_hour
 from ..services.github_service import (
     RepoValidationError,
     clone_repo,
@@ -36,8 +36,11 @@ from ..services.submission_pipeline import process_submission
 
 router = APIRouter()
 
-# Rate limiter for quick-submit: 10/hour per IP
-_submit_limiter = RateLimiter(requests_per_hour=get_settings().submission_rate_limit_per_hour)
+# Rate limiter for quick-submit: per-IP cap from SUBMISSION_RATE_LIMIT_PER_HOUR.
+# Uses cap_source so the cap is re-read on each request — runtime tuning of the
+# setting (after a get_settings.cache_clear() or fresh process start with a
+# different env var) takes effect without re-importing this module.
+_submit_limiter = RateLimiter(cap_source=_submission_cap_per_hour)
 
 # Semaphore to limit concurrent git clones
 _clone_semaphore = asyncio.Semaphore(get_settings().max_concurrent_clones)
