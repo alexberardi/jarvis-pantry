@@ -42,6 +42,40 @@ class StringArray(TypeDecorator):
         if dialect.name == "postgresql":
             return value
         return _json.loads(value)
+
+
+class UtcDateTime(TypeDecorator):
+    """DateTime that round-trips tz-aware UTC across PostgreSQL and SQLite.
+
+    PostgreSQL's `TIMESTAMP WITH TIME ZONE` preserves tzinfo natively; SQLite
+    silently strips it. Without this decorator, a row written tz-aware comes
+    back tz-naive from SQLite — making `now - submission.awaiting_container_since`
+    raise TypeError in the callback-timeout watcher (#22) under local/test runs
+    even though prod (Postgres) is fine. This normalizes so both dialects
+    return tz-aware UTC.
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        return dialect.type_descriptor(DateTime(timezone=True))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+
 from sqlalchemy.orm import relationship
 
 from .db import Base
@@ -180,8 +214,8 @@ class Submission(Base):
     static_analysis_result = Column(JSON, nullable=True)
     container_test_result = Column(JSON, nullable=True)
     llm_provider = Column(String(20), nullable=True)
-    submitted_at = Column(DateTime(timezone=True), default=_utcnow)
-    completed_at = Column(DateTime(timezone=True))
+    submitted_at = Column(UtcDateTime(), default=_utcnow)
+    completed_at = Column(UtcDateTime())
     # Async container-test dispatch: set when a runner kicks off an external test
     # (e.g. GitHub Actions). Callback uses callback_token to authenticate and
     # finalize the submission using dispatch_context.
@@ -191,7 +225,7 @@ class Submission(Base):
     # Set at every awaiting_container transition (initial dispatch + each watcher
     # retry). The callback-timeout watcher (#22) uses (now - this) to decide
     # whether a stalled row should be retried or marked callback_timeout.
-    awaiting_container_since = Column(DateTime(timezone=True), nullable=True)
+    awaiting_container_since = Column(UtcDateTime(), nullable=True)
     dispatch_attempts = Column(Integer, default=0, nullable=False)
     # Frozen lockfile (`uv pip compile` output) resolved at submission acceptance.
     # The runner installs from this verbatim — no live PyPI resolution at run time.

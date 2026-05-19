@@ -29,6 +29,11 @@ from app.services.container_runner import GitHubActionsRunner, RunnerDispatch
 
 FIXED_NOW = datetime(2026, 5, 18, 18, 0, 0, tzinfo=timezone.utc)
 
+# Sentinel so tests can explicitly pass dispatch_context=None to seed a row
+# with no context (the "corruption" case). Without this, the helper's defaulting
+# treats None as "use default" and substitutes a valid dict.
+_UNSET = object()
+
 
 @pytest.fixture
 def db_session(tmp_path):
@@ -57,12 +62,12 @@ def _seed_submission(
     status: str = "awaiting_container",
     awaiting_container_since: datetime | None = None,
     dispatch_attempts: int = 1,
-    dispatch_context: dict | None = None,
+    dispatch_context=_UNSET,
     callback_token: str = "old-token",
     external_run_url: str = "https://github.com/old/run",
     resolved_lockfile: str | None = None,
 ) -> Submission:
-    if dispatch_context is None:
+    if dispatch_context is _UNSET:
         dispatch_context = {
             "manifest": {"name": "x", "version": "1.0.0"},
             "repo_url": "https://github.com/test/repo",
