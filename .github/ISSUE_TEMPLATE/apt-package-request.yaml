@@ -1,0 +1,62 @@
+name: Apt package request
+description: Request a new apt package be added to the Pantry submission allow-list (#16).
+title: "Add <package> to apt-allowlist"
+labels:
+  - apt-allowlist-request
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to request a new entry in `config/apt-allowlist.yaml`.
+        Once approved, the package becomes installable from a community
+        submission's `apt_packages:` field.
+
+  - type: input
+    id: package
+    attributes:
+      label: Package name
+      description: "Exact apt package name (e.g. `mpv`, `ffmpeg`). Lowercase, matches `apt-get install <name>`."
+      placeholder: "package-name"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reason
+    attributes:
+      label: Why does Pantry need this?
+      description: |
+        What does the package do, and which kind of community command needs it?
+        Keep it concise — one or two sentences is fine.
+      placeholder: |
+        Example: Provides the `mpg123` CLI used by media-playback commands as a
+        lighter-weight alternative to mpv on low-RAM Pi nodes.
+    validations:
+      required: true
+
+  - type: input
+    id: install_size
+    attributes:
+      label: Install size (approx)
+      description: "Approximate disk footprint after install. `apt-get install --print-size <name>` works."
+      placeholder: "e.g. 2.4 MB"
+    validations:
+      required: false
+
+  - type: input
+    id: example_command
+    attributes:
+      label: Example community command that would use it
+      description: "Link to a draft submission, repo, or short description."
+      placeholder: "https://github.com/your-user/jarvis-command-…"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: "I confirmed the package is not already on the allow-list (`config/apt-allowlist.yaml`)."
+          required: true
+        - label: "I checked there isn't an existing open request for this package."
+          required: true

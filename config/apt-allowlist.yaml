@@ -1,0 +1,58 @@
+# Curated apt-package allow-list for Jarvis community submissions (#16).
+#
+# This list is the source of truth for what `apt_packages:` entries are
+# permitted in a submitted `jarvis_command.yaml`. Submissions referencing
+# any package not listed here are rejected at submission time by
+# `app/services/static_analysis._validate_apt_allowlist`.
+#
+# Adding a package: open an issue using the
+# `.github/ISSUE_TEMPLATE/apt-package-request.yaml` template, then update
+# this file in the same PR that resolves the request.
+#
+# Removing a package: existing submissions stay accepted (Option 1 — no
+# retroactive invalidation). New submissions stop being able to declare it.
+packages:
+  - name: mpv
+    reason: "Audio/video playback for media commands."
+    added_by: alex
+    added_at: "2026-05-18"
+  - name: vlc
+    reason: "Alternative media-playback backend for commands that prefer VLC."
+    added_by: alex
+    added_at: "2026-05-18"
+  - name: ffmpeg
+    reason: "Audio/video transcoding and capture used by media + speech commands."
+    added_by: alex
+    added_at: "2026-05-18"
+  - name: alsa-utils
+    reason: "Low-level audio device control (volume, mute) on Linux nodes."
+    added_by: alex
+    added_at: "2026-05-18"
+  - name: sox
+    reason: "Audio processing pipeline (resample, mix, effects) used by voice commands."
+    added_by: alex
+    added_at: "2026-05-18"
+  - name: mopidy
+    reason: "Music-server backend for streaming-music commands."
+    added_by: alex
+    added_at: "2026-05-18"
+  - name: pulseaudio
+    reason: "Sound server used by audio routing commands."
+    added_by: alex
+    added_at: "2026-05-18"
+  - name: pipewire-pulse
+    reason: "Modern PulseAudio-compatible sound server on newer distros."
+    added_by: alex
+    added_at: "2026-05-18"
+  - name: bluez
+    reason: "Bluetooth stack for BLE/BT device control commands."
+    added_by: alex
+    added_at: "2026-05-18"
+  - name: yt-dlp
+    reason: "YouTube + generic-stream downloader for media commands."
+    added_by: alex
+    added_at: "2026-05-18"
+  - name: imagemagick
+    reason: "Image manipulation for OCR / camera / vision commands."
+    added_by: alex
+    added_at: "2026-05-18"

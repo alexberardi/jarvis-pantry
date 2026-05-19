@@ -2,8 +2,11 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 
+from app.services import static_analysis as static_analysis_mod
+from app.services.apt_allowlist import AptAllowlist, AptAllowlistEntry
 from app.services.static_analysis import (
     StaticAnalysisResult,
     run_static_analysis,
@@ -953,3 +956,180 @@ class TestHardFailPrimitives:
         assert result.passed is False
         assert any("eval" in e for e in result.errors)
         assert any("subprocess.run" in e for e in result.errors)
+
+
+# ── Apt allow-list validation (#16) ───────────────────────────────────────
+
+def _fake_allowlist(*names: str) -> AptAllowlist:
+    """Build an injectable AptAllowlist for tests (no shipped YAML required)."""
+    entries = [
+        AptAllowlistEntry(name=n, reason="testing", added_by="test", added_at="2026-05-18")
+        for n in names
+    ]
+    return AptAllowlist(entries=entries)
+
+
+def _inject_allowlist(monkeypatch, *names: str) -> None:
+    monkeypatch.setattr(static_analysis_mod, "get_allowlist", lambda: _fake_allowlist(*names))
+
+
+class TestAptAllowlistValidation:
+    def test_manifest_with_on_list_apt_packages_passes(self, tmp_path, monkeypatch):
+        _inject_allowlist(monkeypatch, "mpv", "ffmpeg")
+        manifest = {
+            "name": "test_cmd",
+            "description": "Test command",
+            "version": "1.0.0",
+            "apt_packages": ["mpv", "ffmpeg"],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is True
+        assert not any("apt" in e.lower() for e in result.errors)
+        assert not any("allowlist" in e.lower() for e in result.errors)
+
+    def test_manifest_with_empty_apt_packages_skips_check(self, tmp_path, monkeypatch):
+        _inject_allowlist(monkeypatch)  # empty allow-list — irrelevant, no packages requested
+        manifest = {
+            "name": "test_cmd",
+            "description": "Test command",
+            "version": "1.0.0",
+            "apt_packages": [],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is True
+        assert not any("apt" in e.lower() for e in result.errors)
+
+    def test_manifest_with_no_apt_packages_field_skips_check(self, tmp_path, monkeypatch):
+        _inject_allowlist(monkeypatch)
+        # _make_repo's default manifest has no apt_packages field at all.
+        repo = _make_repo(tmp_path, VALID_COMMAND)
+        result = run_static_analysis(repo)
+        assert result.passed is True
+        assert not any("apt" in e.lower() for e in result.errors)
+
+    def test_mixed_apt_packages_full_reject_no_partial_accept(self, tmp_path, monkeypatch):
+        _inject_allowlist(monkeypatch, "mpv")
+        manifest = {
+            "name": "test_cmd",
+            "description": "Test command",
+            "version": "1.0.0",
+            "apt_packages": ["mpv", "postgresql-server"],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        offending = [e for e in result.errors if "postgresql-server" in e]
+        assert len(offending) == 1
+        # mpv is on the list — must NOT appear in errors.
+        assert not any("'mpv'" in e or '"mpv"' in e for e in result.errors)
+
+    def test_all_off_list_packages_each_get_their_own_error(self, tmp_path, monkeypatch):
+        _inject_allowlist(monkeypatch)  # nothing allowed
+        manifest = {
+            "name": "test_cmd",
+            "description": "Test command",
+            "version": "1.0.0",
+            "apt_packages": ["postgresql-server", "redis-server", "nginx"],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        for pkg in ("postgresql-server", "redis-server", "nginx"):
+            assert any(pkg in e for e in result.errors), f"missing rejection for {pkg}"
+
+    @pytest.mark.parametrize("pkg", [
+        "mpv", "vlc", "ffmpeg", "alsa-utils", "sox", "mopidy",
+        "pulseaudio", "pipewire-pulse", "bluez", "yt-dlp", "imagemagick",
+    ])
+    def test_seed_list_packages_individually_accepted(self, tmp_path, pkg):
+        """Use the real shipped allowlist (no monkeypatch) — sanity-check the seed file."""
+        manifest = {
+            "name": "test_cmd",
+            "description": "Test command",
+            "version": "1.0.0",
+            "apt_packages": [pkg],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is True, f"seed package {pkg} was rejected; errors={result.errors}"
+
+    def test_off_list_error_includes_request_url(self, tmp_path, monkeypatch):
+        _inject_allowlist(monkeypatch)
+        manifest = {
+            "name": "test_cmd",
+            "description": "Test command",
+            "version": "1.0.0",
+            "apt_packages": ["postgresql-server"],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        offending = [e for e in result.errors if "postgresql-server" in e]
+        assert len(offending) == 1
+        err = offending[0]
+        assert "github.com/alexberardi/jarvis-pantry/issues/new" in err
+        assert "apt-package-request" in err
+        assert "postgresql-server" in err
+
+    def test_off_list_finding_carries_reason_code(self, tmp_path, monkeypatch):
+        _inject_allowlist(monkeypatch)
+        manifest = {
+            "name": "test_cmd",
+            "description": "Test command",
+            "version": "1.0.0",
+            "apt_packages": ["postgresql-server"],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        codes = result.reason_codes
+        assert "apt_package_not_on_allowlist" in codes
+        finding = next(
+            f for f in result.findings
+            if f.reason_code == "apt_package_not_on_allowlist" and f.value == "postgresql-server"
+        )
+        assert finding.severity == "error"
+        assert finding.primitive == "apt"
+
+    def test_apt_packages_not_a_list_clean_rejection(self, tmp_path, monkeypatch):
+        _inject_allowlist(monkeypatch, "mpv")
+        manifest = {
+            "name": "test_cmd",
+            "description": "Test command",
+            "version": "1.0.0",
+            "apt_packages": "mpv",  # wrong type — string instead of list
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any(
+            "apt_packages" in e and ("list" in e.lower() or "type" in e.lower())
+            for e in result.errors
+        )
+
+    def test_apt_packages_with_non_string_entry(self, tmp_path, monkeypatch):
+        _inject_allowlist(monkeypatch, "mpv")
+        manifest = {
+            "name": "test_cmd",
+            "description": "Test command",
+            "version": "1.0.0",
+            "apt_packages": ["mpv", 42],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("42" in e for e in result.errors)
+
+    def test_allowlist_check_does_not_run_when_manifest_parse_fails(self, tmp_path, monkeypatch):
+        _inject_allowlist(monkeypatch)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "command.py").write_text(VALID_COMMAND)
+        # Deliberately malformed YAML
+        (repo / "jarvis_command.yaml").write_text("name: test\n  bad: : :\n")
+        (repo / "README.md").write_text("# Test")
+        (repo / "LICENSE").write_text("MIT")
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("Failed to parse manifest" in e for e in result.errors)
+        assert not any("allowlist" in e.lower() for e in result.errors)
