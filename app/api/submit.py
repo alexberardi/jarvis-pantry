@@ -476,32 +476,35 @@ async def quick_submit(
             p["name"] for p in manifest.get("packages", []) or []
             if isinstance(p, dict) and p.get("name")
         ]
-        try:
-            resolved_lockfile = resolve_lockfile(package_specs)
-        except LockfileTooLargeError as e:
-            cleanup_repo(repo_dir)
-            finding = make_finding(
-                rc.RESOLVED_LOCKFILE_EXCEEDS_SIZE_CAP, "error", message=str(e),
-            )
-            raise HTTPException(422, detail={
-                "result": "rejected",
-                "message": "Resolved lockfile exceeds size cap",
-                "reason_codes": [rc.RESOLVED_LOCKFILE_EXCEEDS_SIZE_CAP],
-                "findings": [finding.to_dict()],
-                "warnings": [],
-            })
-        except LockfileResolutionError as e:
-            cleanup_repo(repo_dir)
-            finding = make_finding(
-                rc.LOCKFILE_RESOLUTION_FAILED, "error", message=str(e),
-            )
-            raise HTTPException(422, detail={
-                "result": "rejected",
-                "message": f"Lockfile resolution failed: {e}",
-                "reason_codes": [rc.LOCKFILE_RESOLUTION_FAILED],
-                "findings": [finding.to_dict()],
-                "warnings": [],
-            })
+        if package_specs:
+            try:
+                resolved_lockfile = resolve_lockfile(package_specs)
+            except LockfileTooLargeError as e:
+                cleanup_repo(repo_dir)
+                finding = make_finding(
+                    rc.RESOLVED_LOCKFILE_EXCEEDS_SIZE_CAP, "error", message=str(e),
+                )
+                raise HTTPException(422, detail={
+                    "result": "rejected",
+                    "message": "Resolved lockfile exceeds size cap",
+                    "reason_codes": [rc.RESOLVED_LOCKFILE_EXCEEDS_SIZE_CAP],
+                    "findings": [finding.to_dict()],
+                    "warnings": [],
+                })
+            except LockfileResolutionError as e:
+                cleanup_repo(repo_dir)
+                finding = make_finding(
+                    rc.LOCKFILE_RESOLUTION_FAILED, "error", message=str(e),
+                )
+                raise HTTPException(422, detail={
+                    "result": "rejected",
+                    "message": f"Lockfile resolution failed: {e}",
+                    "reason_codes": [rc.LOCKFILE_RESOLUTION_FAILED],
+                    "findings": [finding.to_dict()],
+                    "warnings": [],
+                })
+        else:
+            resolved_lockfile = ""
 
         # 6. Create submission record
         submission = Submission(
