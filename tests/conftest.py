@@ -10,6 +10,20 @@ from app.main import app
 from app.models import Author, Command, CommandVersion
 
 
+@pytest.fixture(autouse=True)
+def _reset_module_rate_limiters():
+    # `app.api.submit._submit_limiter` and `app.rate_limiter.rate_limiter` are
+    # process-lifetime singletons; their `_buckets` dicts accumulate across
+    # tests because TestClient's client.host is the constant "testclient".
+    # Without this reset, the 11th quick-submit request in a session trips the
+    # default IP cap and cascades 429s into unrelated tests.
+    from app.api.submit import _submit_limiter
+    from app.rate_limiter import rate_limiter
+    _submit_limiter._buckets.clear()
+    rate_limiter._buckets.clear()
+    yield
+
+
 @pytest.fixture
 def db_session(tmp_path):
     """Create a SQLite session for testing."""
