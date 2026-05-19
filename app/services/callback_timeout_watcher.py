@@ -148,7 +148,7 @@ async def _decide_for_submission(db: Session, submission: Submission, now: datet
     if attempts >= MAX_ATTEMPTS:
         submission.status = "callback_timeout"
         submission.error_message = (
-            f"Container test timed out: no callback received after "
+            f"Container test timeout: no callback received after "
             f"{MAX_ATTEMPTS} dispatch attempts (final attempt {age_seconds // 60} min ago)"
         )
         submission.completed_at = now
