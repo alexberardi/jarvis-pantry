@@ -67,8 +67,11 @@ class RateLimiter:
     ):
         self.requests_per_hour = requests_per_hour
         self._cap_source = cap_source
+        # Bucket factory uses a placeholder cap; check()/remaining() overwrite
+        # max_requests with a fresh _current_cap() read before use, so cap_source
+        # is invoked exactly once per check (not once per bucket creation too).
         self._buckets: dict[str, RateBucket] = defaultdict(
-            lambda: RateBucket(window_seconds=3600, max_requests=self._current_cap())
+            lambda: RateBucket(window_seconds=3600, max_requests=0)
         )
 
     def _current_cap(self) -> int:

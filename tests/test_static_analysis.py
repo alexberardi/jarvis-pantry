@@ -1132,4 +1132,8 @@ class TestAptAllowlistValidation:
         result = run_static_analysis(repo)
         assert result.passed is False
         assert any("Failed to parse manifest" in e for e in result.errors)
-        assert not any("allowlist" in e.lower() for e in result.errors)
+        # No apt-allowlist finding should be emitted when the manifest never
+        # parsed. Match via reason codes rather than substring on the message,
+        # because the parse-error message embeds the YAML path, and pytest's
+        # tmp_path includes the test name (which contains "allowlist").
+        assert "apt_package_not_on_allowlist" not in result.reason_codes
