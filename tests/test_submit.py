@@ -775,7 +775,7 @@ class TestContainerResultCallback:
         assert resp.status_code == 409
 
 
-# ── Structured rejection envelope (#18) ─────────────────────────────────
+# ── Structured rejection envelope (#18) ────────────────────────────────
 
 
 class TestRejectionEnvelopeShape:
