@@ -367,12 +367,15 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
 
         # Dangerous pattern detection (shared across all types)
         manifest_cmd_name = manifest.get("name") if manifest else None
-        dangerous, structured = _find_dangerous_patterns(
+        dangerous, structured, hard_fail_errors = _find_dangerous_patterns(
             tree, source=source, command_name=manifest_cmd_name, file=comp_path,
         )
         result.dangerous_patterns.extend(dangerous)
         for f_ in structured:
             result.add_finding(f_)
+        if hard_fail_errors:
+            result.errors.extend(hard_fail_errors)
+            result.passed = False
 
     if result.dangerous_patterns:
         result.warnings.append(f"Found {len(result.dangerous_patterns)} potentially dangerous pattern(s)")
@@ -516,15 +519,19 @@ def _find_dangerous_patterns(
     source: str | None = None,
     command_name: str | None = None,
     file: str | None = None,
-) -> tuple[list[str], list[Finding]]:
+) -> tuple[list[str], list[Finding], list[str]]:
     """Walk AST and flag dangerous patterns.
 
-    Returns ``(legacy_strings, structured_findings)`` — the legacy list is kept
-    for back-compat with the ``dangerous_patterns: list[str]`` field; the
-    structured list carries reason_codes + file/line/snippet for the #18 envelope.
+    Returns ``(legacy_strings, structured_findings, hard_fail_errors)`` — the
+    legacy list is kept for back-compat with the ``dangerous_patterns: list[str]``
+    field; the structured list carries reason_codes + file/line/snippet for the
+    #18 envelope; the third list carries hard-rejection error strings for the
+    ``HARD_FAIL_CALLS`` subset (caller promotes to ``result.errors`` and flips
+    ``result.passed = False``).
     """
     patterns: list[str] = []
     findings: list[Finding] = []
+    hard_fail_errors: list[str] = []
     uses_data_repo = False
 
     for node in ast.walk(tree):
@@ -542,6 +549,10 @@ def _find_dangerous_patterns(
                     file=file, line=line, snippet=snippet, primitive=primitive,
                     value=call_name,
                 ))
+                if call_name in HARD_FAIL_CALLS:
+                    hard_fail_errors.append(
+                        f"Disallowed primitive: {call_name} (rejected by security policy)"
+                    )
 
         # Imports
         elif isinstance(node, ast.Import):
@@ -608,7 +619,7 @@ def _find_dangerous_patterns(
         patterns.extend(cross_access_legacy)
         findings.extend(cross_access_findings)
 
-    return patterns, findings
+    return patterns, findings, hard_fail_errors
 
 
 def _check_cross_command_access(
