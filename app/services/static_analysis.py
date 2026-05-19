@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import rejection_codes as rc
+from .apt_allowlist import get_allowlist, request_url_for
 from .rejection_codes import Finding, make_finding
 
 
@@ -403,6 +404,7 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
     # 6. Deep manifest validation
     if manifest:
         _validate_manifest_deep(manifest, result)
+        _validate_apt_allowlist(manifest, result)
 
     return result
 
@@ -702,3 +704,59 @@ def _validate_manifest_deep(manifest: dict[str, Any], result: StaticAnalysisResu
                         rc.MANIFEST_UNKNOWN_SECRET_SCOPE, "warning",
                         value=str(scope), message=msg,
                     ))
+
+
+def _validate_apt_allowlist(manifest: dict[str, Any], result: StaticAnalysisResult) -> None:
+    """Reject submissions declaring apt packages not on the curated allow-list (#16).
+
+    Type errors (apt_packages not a list, non-string entries) are reported as
+    structural failures. Off-list packages produce one error per offending
+    name, each carrying a one-click request URL for the GH issue template.
+    """
+    if "apt_packages" not in manifest:
+        return
+
+    apt_packages = manifest["apt_packages"]
+
+    if not isinstance(apt_packages, list):
+        msg = (
+            f"manifest 'apt_packages' must be a list of strings, "
+            f"got {type(apt_packages).__name__}"
+        )
+        result.errors.append(msg)
+        result.passed = False
+        result.add_finding(make_finding(
+            rc.MANIFEST_INVALID_FIELD_TYPE, "error",
+            value="apt_packages", message=msg,
+        ))
+        return
+
+    if not apt_packages:
+        return
+
+    allowlist = get_allowlist()
+    for entry in apt_packages:
+        if not isinstance(entry, str):
+            msg = f"manifest 'apt_packages' entry must be a string, got {entry!r}"
+            result.errors.append(msg)
+            result.passed = False
+            result.add_finding(make_finding(
+                rc.MANIFEST_INVALID_FIELD_TYPE, "error",
+                value="apt_packages", message=msg,
+            ))
+            continue
+
+        if allowlist.is_allowed(entry):
+            continue
+
+        request_url = request_url_for(entry)
+        msg = (
+            f"apt package '{entry}' is not on the Pantry allow-list. "
+            f"Request it at {request_url}"
+        )
+        result.errors.append(msg)
+        result.passed = False
+        result.add_finding(make_finding(
+            rc.APT_PACKAGE_NOT_ON_ALLOWLIST, "error",
+            primitive="apt", value=entry, message=msg,
+        ))
