@@ -2,6 +2,7 @@
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, AsyncMock, MagicMock
 
 import yaml
@@ -388,6 +389,65 @@ class TestQuickSubmit:
         })
         assert resp.status_code == 429
         assert "per hour" in resp.json()["detail"]
+        _teardown_quick_submit_auth()
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.validation_queue")
+    def test_quick_submit_honors_runtime_cap_change(
+        self, mock_queue, mock_clone, mock_verify, client, seed_data, db_session, tmp_path, monkeypatch,
+    ):
+        """#31: mutating submission_rate_limit_per_hour mid-session changes the IP-cap
+        threshold without a process restart. Without the live-cap fix, the 3rd request
+        in this test would 429 because _submit_limiter was constructed with cap=2 at
+        import time."""
+        from app.api import submit as submit_mod
+
+        _setup_quick_submit_auth(seed_data)
+        # Reset shared IP-bucket state so prior tests in this run don't leak in.
+        submit_mod._submit_limiter._buckets.clear()
+
+        holder = {"cap": 2}
+        monkeypatch.setattr(
+            submit_mod,
+            "get_settings",
+            lambda: SimpleNamespace(
+                bypass_llm_key=True,
+                rate_limit_disabled=False,
+                submission_rate_limit_per_hour=holder["cap"],
+                submission_rate_limit_per_user_per_hour=100,
+                max_concurrent_clones=5,
+            ),
+        )
+        from app import config as config_mod
+        monkeypatch.setattr(
+            config_mod,
+            "get_settings",
+            lambda: SimpleNamespace(
+                rate_limit_disabled=False,
+                submission_rate_limit_per_hour=holder["cap"],
+            ),
+        )
+
+        repo = _make_fake_repo(tmp_path)
+        mock_clone.return_value = repo
+        mock_queue.enqueue = AsyncMock()
+
+        # Two requests under cap=2 → both 200.
+        for _ in range(2):
+            resp = client.post("/v1/commands/quick-submit", json={
+                "repo_url": "https://github.com/test/jarvis-command-test",
+                "confirm": True,
+            })
+            assert resp.status_code == 200, resp.json()
+
+        # Raise the cap mid-session; the 3rd request now fits.
+        holder["cap"] = 100
+        resp = client.post("/v1/commands/quick-submit", json={
+            "repo_url": "https://github.com/test/jarvis-command-test",
+            "confirm": True,
+        })
+        assert resp.status_code == 200, resp.json()
         _teardown_quick_submit_auth()
 
     @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, side_effect=RepoValidationError("You don't have push access"))
