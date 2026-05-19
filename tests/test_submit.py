@@ -1052,14 +1052,17 @@ class TestLockfileResolverHelper:
             )
             result = lockfile_resolver.resolve_lockfile(["requests", "pyyaml"])
         assert result == _HAPPY_LOCKFILE
-        # Subprocess was called with uv + the package names
+        # Subprocess was called with uv + the package names piped via stdin
         args, kwargs = mock_run.call_args
         cmd = args[0] if args else kwargs.get("args")
         assert "uv" in cmd[0] or cmd[0] == "uv"
         assert "pip" in cmd
         assert "compile" in cmd
-        assert "requests" in cmd
-        assert "pyyaml" in cmd
+        # Packages arrive via stdin (the trailing "-" arg tells uv to read requirements from stdin)
+        assert "-" in cmd
+        stdin_input = kwargs.get("input", "")
+        assert "requests" in stdin_input
+        assert "pyyaml" in stdin_input
 
     def test_empty_packages_returns_empty_string_without_subprocess(self):
         from app.services import lockfile_resolver
