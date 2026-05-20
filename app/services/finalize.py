@@ -177,6 +177,6 @@ def finalize_submission(
     submission.command_id = command.id
     submission.status = "published"
     submission.completed_at = datetime.now(timezone.utc)
-    submission.callback_token = None  # single-use, consume after finalize
+    submission.callback_nonce = None  # single-use, consume after finalize
     db.commit()
     logger.info("Submission %d published as %s", submission.id, command_name)

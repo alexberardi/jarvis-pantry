@@ -107,6 +107,7 @@ class TestGitHubActionsDispatchPayload:
         settings = mock_settings.return_value
         settings.pantry_gh_token = "ghp_x"
         settings.pantry_callback_base_url = "https://pantry.example/"
+        settings.pantry_callback_signing_key = "k" * 32
         settings.pantry_runner_repo = "alexberardi/jarvis-pantry-runner"
         settings.pantry_runner_workflow = "container-test.yml"
         settings.pantry_runner_ref = "main"
@@ -122,6 +123,102 @@ class TestGitHubActionsDispatchPayload:
             await GitHubActionsRunner().dispatch(
                 command_dir=tmp_path,
                 submission_id=8,
+                lockfile_content="",
+                is_bundle=False,
+                repo_url="https://github.com/test/repo",
+            )
+
+
+class TestCallbackHmacDispatchShape:
+    """Wire-shape contract for the HMAC callback (#25).
+
+    The new contract: `nonce` is a workflow input (public); `callback_token`
+    is gone. The signing key never crosses the workflow_dispatch boundary —
+    it lives only in the server's settings and the runner's GHA-env secret.
+    """
+
+    def _settings(self, mock_settings):
+        settings = mock_settings.return_value
+        settings.pantry_gh_token = "ghp_x"
+        settings.pantry_callback_base_url = "https://pantry.example/"
+        settings.pantry_callback_signing_key = "server-side-secret-32-bytes-of-stuff!!"
+        settings.pantry_runner_repo = "alexberardi/jarvis-pantry-runner"
+        settings.pantry_runner_workflow = "container-test.yml"
+        settings.pantry_runner_ref = "main"
+        return settings
+
+    def _patched_client(self, mock_client_cls):
+        post_mock = AsyncMock(return_value=_FakeResponse(204))
+        client_instance = MagicMock()
+        client_instance.post = post_mock
+        client_instance.__aenter__ = AsyncMock(return_value=client_instance)
+        client_instance.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = client_instance
+        return post_mock
+
+    @pytest.mark.asyncio
+    @patch("app.services.container_runner.get_settings")
+    @patch("app.services.container_runner.httpx.AsyncClient")
+    async def test_payload_contains_nonce_and_no_callback_token(
+        self, mock_client_cls, mock_settings, tmp_path,
+    ):
+        self._settings(mock_settings)
+        post_mock = self._patched_client(mock_client_cls)
+
+        await GitHubActionsRunner().dispatch(
+            command_dir=tmp_path,
+            submission_id=11,
+            lockfile_content="",
+            is_bundle=False,
+            repo_url="https://github.com/test/repo",
+        )
+
+        _args, kwargs = post_mock.call_args
+        inputs = kwargs["json"]["inputs"]
+        assert "nonce" in inputs
+        assert isinstance(inputs["nonce"], str) and len(inputs["nonce"]) >= 32
+        # Hard cut: the signing key must never leak through workflow_dispatch,
+        # and the legacy one-time token must be gone from the wire.
+        assert "callback_token" not in inputs
+        assert "signing_key" not in inputs
+        assert "pantry_callback_signing_key" not in inputs
+
+    @pytest.mark.asyncio
+    @patch("app.services.container_runner.get_settings")
+    @patch("app.services.container_runner.httpx.AsyncClient")
+    async def test_dispatch_returns_nonce_for_persistence(
+        self, mock_client_cls, mock_settings, tmp_path,
+    ):
+        self._settings(mock_settings)
+        post_mock = self._patched_client(mock_client_cls)
+
+        dispatch = await GitHubActionsRunner().dispatch(
+            command_dir=tmp_path,
+            submission_id=12,
+            lockfile_content="",
+            is_bundle=False,
+            repo_url="https://github.com/test/repo",
+        )
+        _args, kwargs = post_mock.call_args
+        inputs = kwargs["json"]["inputs"]
+        assert dispatch.callback_nonce == inputs["nonce"]
+        # Legacy attribute is gone from the dataclass.
+        assert not hasattr(dispatch, "callback_token")
+
+    @pytest.mark.asyncio
+    @patch("app.services.container_runner.get_settings")
+    @patch("app.services.container_runner.httpx.AsyncClient")
+    async def test_fails_fast_when_signing_key_unset(
+        self, mock_client_cls, mock_settings, tmp_path,
+    ):
+        settings = self._settings(mock_settings)
+        settings.pantry_callback_signing_key = ""
+        self._patched_client(mock_client_cls)
+
+        with pytest.raises(RuntimeError, match="PANTRY_CALLBACK_SIGNING_KEY"):
+            await GitHubActionsRunner().dispatch(
+                command_dir=tmp_path,
+                submission_id=13,
                 lockfile_content="",
                 is_bundle=False,
                 repo_url="https://github.com/test/repo",

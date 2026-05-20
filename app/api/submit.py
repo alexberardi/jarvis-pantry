@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -568,8 +570,21 @@ class ContainerResultCallback(BaseModel):
     raw_output: str = ""
 
 
+def _compute_callback_hmac(
+    *, submission_id: int, nonce: str, body_bytes: bytes, signing_key: str,
+) -> str:
+    """HMAC-SHA256 over `{submission_id}|{nonce}|{body_bytes}` as hex.
+
+    Body bytes are appended verbatim — the runner signs the exact JSON it
+    sends, the server reads `request.body()` to recover the same bytes, no
+    canonicalization layer between them.
+    """
+    msg = f"{submission_id}|{nonce}|".encode("utf-8") + body_bytes
+    return hmac.new(signing_key.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+
+
 @router.post("/v1/submissions/{submission_id}/container-result")
-def container_result_callback(
+async def container_result_callback(
     submission_id: int,
     body: ContainerResultCallback,
     request: Request,
@@ -577,9 +592,10 @@ def container_result_callback(
 ):
     """Callback from an out-of-process container test runner (e.g. GitHub Actions).
 
-    Authenticated with a per-submission token issued when the runner was
-    dispatched. The token is stored on the submission row and cleared after
-    successful finalization — so it's single-use and scoped to one submission.
+    Authenticated with an HMAC-SHA256 over the request body keyed by the
+    server-held `pantry_callback_signing_key` and mixed with the
+    per-submission `callback_nonce`. The nonce is cleared on consume to
+    preserve the single-use semantic.
     """
     from ..services.container_test import ContainerTestResult
     from ..services.finalize import _review_from_json, finalize_submission
@@ -594,10 +610,24 @@ def container_result_callback(
             f"Submission is in status {submission.status!r}, not awaiting a container result",
         )
 
-    expected_token = submission.callback_token
-    provided_token = request.headers.get("X-Pantry-Token", "")
-    if not expected_token or provided_token != expected_token:
-        raise HTTPException(401, "Invalid or missing callback token")
+    settings = get_settings()
+    if not settings.pantry_callback_signing_key:
+        raise HTTPException(500, "Server callback signing key is not configured")
+
+    expected_nonce = submission.callback_nonce
+    provided_hmac = request.headers.get("X-Pantry-HMAC", "")
+    if not expected_nonce or not provided_hmac:
+        raise HTTPException(401, "Invalid or missing callback signature")
+
+    body_bytes = await request.body()
+    expected_hmac = _compute_callback_hmac(
+        submission_id=submission_id,
+        nonce=expected_nonce,
+        body_bytes=body_bytes,
+        signing_key=settings.pantry_callback_signing_key,
+    )
+    if not hmac.compare_digest(provided_hmac, expected_hmac):
+        raise HTTPException(401, "Invalid or missing callback signature")
 
     ctx = submission.dispatch_context or {}
     if not ctx:

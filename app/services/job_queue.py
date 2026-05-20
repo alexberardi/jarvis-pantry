@@ -172,7 +172,7 @@ class ValidationQueue:
                 # finalize_submission needs and wait for the callback endpoint.
                 submission.status = "awaiting_container"
                 submission.external_run_url = dispatch.external_run_url
-                submission.callback_token = dispatch.callback_token
+                submission.callback_nonce = dispatch.callback_nonce
                 submission.dispatch_context = build_dispatch_context(
                     manifest=job.manifest,
                     review=review,

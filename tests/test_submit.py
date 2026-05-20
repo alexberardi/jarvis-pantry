@@ -686,15 +686,24 @@ class TestQuickSubmit:
 
 
 class TestContainerResultCallback:
-    """Callback endpoint used by out-of-process container test runners."""
+    """Callback endpoint used by out-of-process container test runners.
 
-    def _seed_awaiting(self, db_session, seed_data, *, token="tok-abc"):
+    Authentication is HMAC-SHA256 over `{submission_id}|{nonce}|{body_bytes}`
+    keyed by `pantry_callback_signing_key`. The bytes posted by the client must
+    match the bytes signed — we send `data=<bytes>` rather than `json=<dict>`
+    so the test does not depend on any client-side re-serialization.
+    """
+
+    _SIGNING_KEY = "test-signing-key-32-bytes-of-stuff!!"
+    _NONCE = "test-nonce-abc"
+
+    def _seed_awaiting(self, db_session, seed_data, *, nonce=_NONCE):
         sub = Submission(
             github_repo_url="https://github.com/test/jarvis-command-widget",
             author_id=seed_data["author"].id,
             status="awaiting_container",
             llm_provider=None,
-            callback_token=token,
+            callback_nonce=nonce,
             external_run_url="https://github.com/x/y/actions/runs/1",
             dispatch_context={
                 "manifest": {
@@ -717,14 +726,34 @@ class TestContainerResultCallback:
         db_session.refresh(sub)
         return sub
 
+    def _post_signed(self, client, submission_id, payload, *, nonce=_NONCE, key=_SIGNING_KEY):
+        import hashlib
+        import hmac
+        import json
+
+        body_bytes = json.dumps(payload).encode("utf-8")
+        msg = f"{submission_id}|{nonce}|".encode("utf-8") + body_bytes
+        sig = hmac.new(key.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+        return client.post(
+            f"/v1/submissions/{submission_id}/container-result",
+            content=body_bytes,
+            headers={"X-Pantry-HMAC": sig, "Content-Type": "application/json"},
+        )
+
+    def _with_signing_key(self):
+        return patch(
+            "app.api.submit.get_settings",
+            return_value=SimpleNamespace(pantry_callback_signing_key=self._SIGNING_KEY),
+        )
+
     def test_publishes_on_pass(self, client, seed_data, db_session):
         sub = self._seed_awaiting(db_session, seed_data)
-
-        resp = client.post(
-            f"/v1/submissions/{sub.id}/container-result",
-            headers={"X-Pantry-Token": "tok-abc"},
-            json={"passed": True, "summary": "2/2 passed", "test_count": 2, "pass_count": 2},
-        )
+        with self._with_signing_key():
+            resp = self._post_signed(
+                client, sub.id,
+                {"passed": True, "summary": "2/2 passed", "test_count": 2, "pass_count": 2,
+                 "fail_count": 0, "errors": [], "raw_output": ""},
+            )
         assert resp.status_code == 200
         assert resp.json()["status"] == "published"
 
@@ -732,46 +761,89 @@ class TestContainerResultCallback:
         updated = db_session.query(Submission).filter(Submission.id == sub.id).first()
         assert updated is not None
         assert updated.status == "published"
-        assert updated.callback_token is None  # single-use
+        assert updated.callback_nonce is None  # single-use
         assert updated.command_id is not None
 
     def test_rejects_on_fail(self, client, seed_data, db_session):
         sub = self._seed_awaiting(db_session, seed_data)
-
-        resp = client.post(
-            f"/v1/submissions/{sub.id}/container-result",
-            headers={"X-Pantry-Token": "tok-abc"},
-            json={"passed": False, "summary": "1/2 failed", "test_count": 2, "pass_count": 1, "fail_count": 1, "errors": ["AssertionError: expected 3"]},
-        )
+        with self._with_signing_key():
+            resp = self._post_signed(
+                client, sub.id,
+                {"passed": False, "summary": "1/2 failed", "test_count": 2,
+                 "pass_count": 1, "fail_count": 1, "errors": ["AssertionError: expected 3"],
+                 "raw_output": ""},
+            )
         assert resp.status_code == 200
         assert resp.json()["status"] == "rejected"
 
-    def test_rejects_bad_token(self, client, seed_data, db_session):
+    def test_rejects_bad_signature(self, client, seed_data, db_session):
         sub = self._seed_awaiting(db_session, seed_data)
-
-        resp = client.post(
-            f"/v1/submissions/{sub.id}/container-result",
-            headers={"X-Pantry-Token": "wrong"},
-            json={"passed": True, "summary": "ok"},
-        )
+        with self._with_signing_key():
+            resp = client.post(
+                f"/v1/submissions/{sub.id}/container-result",
+                content=b'{"passed": true, "summary": "ok"}',
+                headers={"X-Pantry-HMAC": "deadbeef" * 8, "Content-Type": "application/json"},
+            )
         assert resp.status_code == 401
+
+    def test_rejects_missing_signature(self, client, seed_data, db_session):
+        sub = self._seed_awaiting(db_session, seed_data)
+        with self._with_signing_key():
+            resp = client.post(
+                f"/v1/submissions/{sub.id}/container-result",
+                json={"passed": True, "summary": "ok"},
+            )
+        assert resp.status_code == 401
+
+    def test_rejects_body_tamper(self, client, seed_data, db_session):
+        """Re-signing one body and posting different bytes must fail — that's the
+        whole point of signing the body, not just the nonce."""
+        sub = self._seed_awaiting(db_session, seed_data)
+        import hashlib
+        import hmac as _hmac
+        import json
+        signed_body = json.dumps({"passed": False, "summary": "fail"}).encode("utf-8")
+        msg = f"{sub.id}|{self._NONCE}|".encode("utf-8") + signed_body
+        sig = _hmac.new(self._SIGNING_KEY.encode("utf-8"), msg, hashlib.sha256).hexdigest()
+        tampered_body = json.dumps({"passed": True, "summary": "ok"}).encode("utf-8")
+        with self._with_signing_key():
+            resp = client.post(
+                f"/v1/submissions/{sub.id}/container-result",
+                content=tampered_body,
+                headers={"X-Pantry-HMAC": sig, "Content-Type": "application/json"},
+            )
+        assert resp.status_code == 401
+
+    def test_rejects_when_signing_key_unset(self, client, seed_data, db_session):
+        """If the server has no signing key, we cannot authenticate the callback
+        at all — return 500 (mis-configuration), never 200."""
+        sub = self._seed_awaiting(db_session, seed_data)
+        with patch(
+            "app.api.submit.get_settings",
+            return_value=SimpleNamespace(pantry_callback_signing_key=""),
+        ):
+            resp = self._post_signed(
+                client, sub.id,
+                {"passed": True, "summary": "ok", "test_count": 1, "pass_count": 1,
+                 "fail_count": 0, "errors": [], "raw_output": ""},
+            )
+        assert resp.status_code == 500
 
     def test_wrong_status(self, client, seed_data, db_session):
         sub = Submission(
             github_repo_url="https://github.com/test/jarvis-command-widget",
             author_id=seed_data["author"].id,
             status="published",
-            callback_token="tok-abc",
+            callback_nonce=self._NONCE,
         )
         db_session.add(sub)
         db_session.commit()
         db_session.refresh(sub)
-
-        resp = client.post(
-            f"/v1/submissions/{sub.id}/container-result",
-            headers={"X-Pantry-Token": "tok-abc"},
-            json={"passed": True, "summary": "ok"},
-        )
+        with self._with_signing_key():
+            resp = self._post_signed(
+                client, sub.id,
+                {"passed": True, "summary": "ok"},
+            )
         assert resp.status_code == 409
 
 

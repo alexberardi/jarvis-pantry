@@ -63,7 +63,7 @@ def _seed_submission(
     awaiting_container_since: datetime | None = None,
     dispatch_attempts: int = 1,
     dispatch_context=_UNSET,
-    callback_token: str = "old-token",
+    callback_nonce: str = "old-token",
     external_run_url: str = "https://github.com/old/run",
     resolved_lockfile: str | None = None,
 ) -> Submission:
@@ -82,7 +82,7 @@ def _seed_submission(
         awaiting_container_since=awaiting_container_since,
         dispatch_attempts=dispatch_attempts,
         dispatch_context=dispatch_context,
-        callback_token=callback_token,
+        callback_nonce=callback_nonce,
         external_run_url=external_run_url,
         resolved_lockfile=resolved_lockfile,
     )
@@ -101,7 +101,7 @@ def _ga_runner_mock(dispatch_result=None, side_effect=None):
             return_value=dispatch_result or RunnerDispatch(
                 result=None,
                 external_run_url="https://github.com/new/run",
-                callback_token="new-token",
+                callback_nonce="new-token",
             ),
         )
     return runner
@@ -126,7 +126,7 @@ class TestWatcherDecisions:
         assert sub.status == "awaiting_container"
         assert sub.dispatch_attempts == 2
         assert sub.awaiting_container_since == FIXED_NOW  # restamped
-        assert sub.callback_token == "new-token"
+        assert sub.callback_nonce == "new-token"
         assert sub.external_run_url == "https://github.com/new/run"
 
     @pytest.mark.asyncio
@@ -386,7 +386,7 @@ class TestWatcherSweep:
             RunnerDispatch(
                 result=None,
                 external_run_url="https://github.com/new/run",
-                callback_token="new-token",
+                callback_nonce="new-token",
             ),
         ])
         with patch("app.services.callback_timeout_watcher._now", return_value=FIXED_NOW), \
