@@ -5,7 +5,7 @@ a public nonce that pairs with the server-held signing key. Column rename only
 (no data shape change), so in-flight awaiting_container rows keep their value.
 
 Revision ID: g4b5c6d7e8f9
-Revises: f3a4b5c6d7e8
+Revises: a4b5c6d7e8f9
 Create Date: 2026-05-19
 """
 from typing import Sequence, Union
@@ -14,7 +14,7 @@ from alembic import op
 
 
 revision: str = "g4b5c6d7e8f9"
-down_revision: Union[str, None] = "f3a4b5c6d7e8"
+down_revision: Union[str, None] = "a4b5c6d7e8f9"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
