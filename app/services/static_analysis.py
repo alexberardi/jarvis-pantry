@@ -16,6 +16,10 @@ from typing import Any
 
 from . import rejection_codes as rc
 from .apt_allowlist import get_allowlist, request_url_for
+from .post_install_allowlist import (
+    get_allowlist as get_post_install_allowlist,
+    request_url_for as post_install_request_url_for,
+)
 from .rejection_codes import Finding, make_finding
 
 
@@ -408,6 +412,7 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
     if manifest:
         _validate_manifest_deep(manifest, result)
         _validate_apt_allowlist(manifest, result)
+        _validate_post_install_allowlist(manifest, result)
 
     return result
 
@@ -770,4 +775,112 @@ def _validate_apt_allowlist(manifest: dict[str, Any], result: StaticAnalysisResu
         result.add_finding(make_finding(
             rc.APT_PACKAGE_NOT_ON_ALLOWLIST, "error",
             primitive="apt", value=entry, message=msg,
+        ))
+
+
+def _validate_post_install_allowlist(
+    manifest: dict[str, Any], result: StaticAnalysisResult,
+) -> None:
+    """Reject submissions whose post_install ops aren't on the curated allow-list.
+
+    Each op is checked along two axes:
+      1. The `type` must be a known named op (one the SDK schema and the
+         node-side wrapper actually implement).
+      2. The op's target (per `_TARGET_KEYS_BY_OP` in post_install_allowlist)
+         must appear in the Pantry-curated allow-list.
+
+    Off-list ops produce one error per offending op, each with a one-click
+    request URL for the GH issue template.
+    """
+    if "post_install" not in manifest:
+        return
+
+    ops = manifest["post_install"]
+
+    if not isinstance(ops, list):
+        msg = (
+            f"manifest 'post_install' must be a list of op objects, "
+            f"got {type(ops).__name__}"
+        )
+        result.errors.append(msg)
+        result.passed = False
+        result.add_finding(make_finding(
+            rc.MANIFEST_INVALID_FIELD_TYPE, "error",
+            value="post_install", message=msg,
+        ))
+        return
+
+    if not ops:
+        return
+
+    allowlist = get_post_install_allowlist()
+    known_ops = allowlist.known_op_types()
+
+    for i, op in enumerate(ops):
+        if not isinstance(op, dict):
+            msg = f"manifest 'post_install[{i}]' must be an object, got {type(op).__name__}"
+            result.errors.append(msg)
+            result.passed = False
+            result.add_finding(make_finding(
+                rc.MANIFEST_INVALID_FIELD_TYPE, "error",
+                value=f"post_install[{i}]", message=msg,
+            ))
+            continue
+
+        op_type = op.get("type")
+        if not isinstance(op_type, str) or not op_type:
+            msg = f"manifest 'post_install[{i}]' missing required 'type' field"
+            result.errors.append(msg)
+            result.passed = False
+            result.add_finding(make_finding(
+                rc.POST_INSTALL_OP_UNKNOWN_TYPE, "error",
+                value=f"post_install[{i}]", message=msg,
+            ))
+            continue
+
+        if op_type not in known_ops:
+            msg = (
+                f"manifest 'post_install[{i}]' has unknown op type {op_type!r}. "
+                f"Known: {sorted(known_ops)}"
+            )
+            result.errors.append(msg)
+            result.passed = False
+            result.add_finding(make_finding(
+                rc.POST_INSTALL_OP_UNKNOWN_TYPE, "error",
+                value=op_type, message=msg,
+            ))
+            continue
+
+        target_key = allowlist.target_key_for(op_type)
+        # target_key is never None here (op_type came from known_ops),
+        # but pyright doesn't know that — keep the explicit guard.
+        if target_key is None:
+            continue
+        target = op.get(target_key)
+        if not isinstance(target, str) or not target:
+            msg = (
+                f"manifest 'post_install[{i}]' (type={op_type}) is missing "
+                f"required field {target_key!r}"
+            )
+            result.errors.append(msg)
+            result.passed = False
+            result.add_finding(make_finding(
+                rc.POST_INSTALL_OP_MISSING_TARGET, "error",
+                value=f"post_install[{i}].{target_key}", message=msg,
+            ))
+            continue
+
+        if allowlist.is_allowed(op_type, target):
+            continue
+
+        request_url = post_install_request_url_for(op_type, target)
+        msg = (
+            f"post_install op {op_type!r} for target {target!r} is not on "
+            f"the Pantry allow-list. Request it at {request_url}"
+        )
+        result.errors.append(msg)
+        result.passed = False
+        result.add_finding(make_finding(
+            rc.POST_INSTALL_OP_NOT_ON_ALLOWLIST, "error",
+            primitive="post_install", value=f"{op_type}:{target}", message=msg,
         ))

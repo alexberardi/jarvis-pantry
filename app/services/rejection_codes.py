@@ -53,6 +53,11 @@ ROUTINE_INVALID_JSON = "routine_invalid_json"
 # Submitted-pypi / apt (lands with #16 — pre-registered here)
 APT_PACKAGE_NOT_ON_ALLOWLIST = "apt_package_not_on_allowlist"
 
+# Post-install ops (#19)
+POST_INSTALL_OP_UNKNOWN_TYPE = "post_install_op_unknown_type"
+POST_INSTALL_OP_MISSING_TARGET = "post_install_op_missing_target"
+POST_INSTALL_OP_NOT_ON_ALLOWLIST = "post_install_op_not_on_allowlist"
+
 # Lockfile resolution (#21)
 LOCKFILE_RESOLUTION_FAILED = "lockfile_resolution_failed"
 RESOLVED_LOCKFILE_EXCEEDS_SIZE_CAP = "resolved_lockfile_exceeds_size_cap"
@@ -89,6 +94,9 @@ ALL_REASON_CODES: frozenset[str] = frozenset({
     ROUTINE_STEP_MISSING_COMMAND,
     ROUTINE_INVALID_JSON,
     APT_PACKAGE_NOT_ON_ALLOWLIST,
+    POST_INSTALL_OP_UNKNOWN_TYPE,
+    POST_INSTALL_OP_MISSING_TARGET,
+    POST_INSTALL_OP_NOT_ON_ALLOWLIST,
     LOCKFILE_RESOLUTION_FAILED,
     RESOLVED_LOCKFILE_EXCEEDS_SIZE_CAP,
     LEGACY_UNSTRUCTURED,

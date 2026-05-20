@@ -1,0 +1,33 @@
+# Curated post-install op allow-list for Jarvis community submissions.
+#
+# This file is the source of truth for which (op type, target) pairs are
+# permitted in a submitted manifest's `post_install:` field. Submissions
+# referencing pairs not listed here are rejected at submission time by
+# `app/services/static_analysis._validate_post_install_allowlist`.
+#
+# Adding an entry: open an issue using the
+# `.github/ISSUE_TEMPLATE/post-install-request.yaml` template, then update
+# this file in the same PR that resolves the request.
+#
+# Removing an entry: existing submissions stay accepted (Option 1 — no
+# retroactive invalidation). New submissions stop being able to declare it.
+
+# Entries for op type `configure_systemd_service`. Each entry names a
+# systemd unit that a package is allowed to write a drop-in for. Packages
+# can only configure services they ship an apt dependency on (e.g.
+# shairport-sync, which is on apt-allowlist.yaml).
+configure_systemd_service:
+  - service: shairport-sync
+    reason: "Per-node config for AirPlay receiver — User=jarvis_user + pulse env so audio routes through the node's session."
+    added_by: alex
+    added_at: "2026-05-20"
+
+# Entries for op type `set_config_file_value`. Each entry names a config
+# file (full absolute path) a package is allowed to modify. Limit this to
+# files belonging to apt packages already on the allow-list; never grant
+# write access to files outside /etc that the package didn't install.
+set_config_file_value:
+  - file: /etc/shairport-sync.conf
+    reason: "Switch shairport-sync's audio backend (output_backend = \"pa\") so it shares the node's PulseAudio/PipeWire session."
+    added_by: alex
+    added_at: "2026-05-20"

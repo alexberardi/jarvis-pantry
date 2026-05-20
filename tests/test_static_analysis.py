@@ -1137,3 +1137,174 @@ class TestAptAllowlistValidation:
         # because the parse-error message embeds the YAML path, and pytest's
         # tmp_path includes the test name (which contains "allowlist").
         assert "apt_package_not_on_allowlist" not in result.reason_codes
+
+
+# --- post_install allow-list ----------------------------------------------
+
+
+def _fake_post_install_allowlist(*pairs: tuple[str, str]):
+    """Build a PostInstallAllowlist from (op_type, target) tuples."""
+    from app.services.post_install_allowlist import (
+        PostInstallAllowlist, PostInstallAllowlistEntry,
+    )
+    entries = [
+        PostInstallAllowlistEntry(
+            op_type=op, target=tgt, reason="test", added_by="test", added_at="test",
+        )
+        for op, tgt in pairs
+    ]
+    return PostInstallAllowlist(entries=entries)
+
+
+def _inject_post_install_allowlist(monkeypatch, *pairs: tuple[str, str]) -> None:
+    monkeypatch.setattr(
+        static_analysis_mod,
+        "get_post_install_allowlist",
+        lambda: _fake_post_install_allowlist(*pairs),
+    )
+
+
+class TestPostInstallAllowlistValidation:
+    """Submissions can only declare post_install ops whose (op_type, target)
+    pair is on the curated allow-list. This is the Pantry-side safety gate
+    that decides which services a package is allowed to configure."""
+
+    def test_manifest_with_no_post_install_skips_check(self, tmp_path, monkeypatch):
+        _inject_post_install_allowlist(monkeypatch)
+        repo = _make_repo(tmp_path, VALID_COMMAND)
+        result = run_static_analysis(repo)
+        assert result.passed is True
+        assert not any("post_install" in e for e in result.errors)
+
+    def test_manifest_with_empty_post_install_skips_check(self, tmp_path, monkeypatch):
+        _inject_post_install_allowlist(monkeypatch)
+        manifest = {
+            "name": "t", "description": "T", "version": "1.0.0",
+            "post_install": [],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is True
+
+    def test_on_list_op_passes(self, tmp_path, monkeypatch):
+        _inject_post_install_allowlist(
+            monkeypatch,
+            ("configure_systemd_service", "shairport-sync"),
+            ("set_config_file_value", "/etc/shairport-sync.conf"),
+        )
+        manifest = {
+            "name": "t", "description": "T", "version": "1.0.0",
+            "post_install": [
+                {"type": "configure_systemd_service", "service": "shairport-sync",
+                 "run_as": "jarvis_user"},
+                {"type": "set_config_file_value",
+                 "file": "/etc/shairport-sync.conf", "format": "libconfig",
+                 "section": "general", "key": "output_backend", "value": "pa"},
+            ],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is True
+        assert not any("post_install" in e for e in result.errors)
+
+    def test_off_list_service_rejected(self, tmp_path, monkeypatch):
+        _inject_post_install_allowlist(
+            monkeypatch, ("configure_systemd_service", "shairport-sync"),
+        )
+        manifest = {
+            "name": "t", "description": "T", "version": "1.0.0",
+            "post_install": [
+                {"type": "configure_systemd_service", "service": "sshd"},
+            ],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("sshd" in e and "allow-list" in e for e in result.errors)
+        assert "post_install_op_not_on_allowlist" in result.reason_codes
+
+    def test_off_list_file_rejected(self, tmp_path, monkeypatch):
+        _inject_post_install_allowlist(
+            monkeypatch, ("set_config_file_value", "/etc/shairport-sync.conf"),
+        )
+        manifest = {
+            "name": "t", "description": "T", "version": "1.0.0",
+            "post_install": [
+                {"type": "set_config_file_value", "file": "/etc/passwd",
+                 "format": "libconfig", "section": "x", "key": "y", "value": "z"},
+            ],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("/etc/passwd" in e for e in result.errors)
+
+    def test_unknown_op_type_rejected(self, tmp_path, monkeypatch):
+        _inject_post_install_allowlist(monkeypatch)
+        manifest = {
+            "name": "t", "description": "T", "version": "1.0.0",
+            "post_install": [
+                {"type": "exec_arbitrary_script", "command": "rm -rf /"},
+            ],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert "post_install_op_unknown_type" in result.reason_codes
+
+    def test_missing_target_field_rejected(self, tmp_path, monkeypatch):
+        _inject_post_install_allowlist(
+            monkeypatch, ("configure_systemd_service", "shairport-sync"),
+        )
+        manifest = {
+            "name": "t", "description": "T", "version": "1.0.0",
+            "post_install": [
+                # Missing required "service" field.
+                {"type": "configure_systemd_service", "run_as": "jarvis_user"},
+            ],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert "post_install_op_missing_target" in result.reason_codes
+
+    def test_post_install_not_a_list_clean_rejection(self, tmp_path, monkeypatch):
+        _inject_post_install_allowlist(monkeypatch)
+        manifest = {
+            "name": "t", "description": "T", "version": "1.0.0",
+            "post_install": "oops",  # not a list
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert "manifest_invalid_field_type" in result.reason_codes
+
+    def test_mixed_ops_full_reject_no_partial_accept(self, tmp_path, monkeypatch):
+        _inject_post_install_allowlist(
+            monkeypatch, ("configure_systemd_service", "shairport-sync"),
+        )
+        manifest = {
+            "name": "t", "description": "T", "version": "1.0.0",
+            "post_install": [
+                {"type": "configure_systemd_service", "service": "shairport-sync"},
+                {"type": "configure_systemd_service", "service": "sshd"},
+            ],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        # Only the off-list entry should be flagged.
+        sshd_errs = [e for e in result.errors if "sshd" in e]
+        assert len(sshd_errs) == 1
+
+    def test_seed_allowlist_actually_loads(self):
+        """The on-disk YAML loads cleanly and includes our seed entries —
+        guards against the file going missing or the format drifting."""
+        from app.services.post_install_allowlist import (
+            DEFAULT_ALLOWLIST_PATH, load_allowlist,
+        )
+        al = load_allowlist(DEFAULT_ALLOWLIST_PATH)
+        assert al.is_allowed("configure_systemd_service", "shairport-sync")
+        assert al.is_allowed("set_config_file_value", "/etc/shairport-sync.conf")
+        assert not al.is_allowed("configure_systemd_service", "sshd")
+        assert not al.is_allowed("set_config_file_value", "/etc/passwd")
