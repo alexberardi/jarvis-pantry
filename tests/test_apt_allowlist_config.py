@@ -18,6 +18,7 @@ CONFIG_PATH = REPO_ROOT / "config" / "apt-allowlist.yaml"
 EXPECTED_SEED = {
     "mpv", "vlc", "ffmpeg", "alsa-utils", "sox", "mopidy",
     "pulseaudio", "pipewire-pulse", "bluez", "yt-dlp", "imagemagick",
+    "shairport-sync",
 }
 
 
@@ -32,11 +33,11 @@ class TestShippedAllowlistConfig:
         assert isinstance(data, dict)
         assert isinstance(data.get("packages"), list)
 
-    def test_shipped_yaml_has_eleven_seed_entries(self):
+    def test_shipped_yaml_matches_expected_seed_set(self):
         data = _load()
         names = {entry["name"] for entry in data["packages"]}
         assert names == EXPECTED_SEED
-        assert len(data["packages"]) == 11
+        assert len(data["packages"]) == len(EXPECTED_SEED)
 
     def test_shipped_yaml_entries_have_required_fields(self):
         data = _load()

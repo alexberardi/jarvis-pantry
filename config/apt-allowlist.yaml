@@ -56,3 +56,7 @@ packages:
     reason: "Image manipulation for OCR / camera / vision commands."
     added_by: alex
     added_at: "2026-05-18"
+  - name: shairport-sync
+    reason: "AirPlay receiver — turns the node into an AirPlay-discoverable speaker for any AirPlay source."
+    added_by: alex
+    added_at: "2026-05-19"
