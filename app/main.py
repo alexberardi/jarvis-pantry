@@ -29,6 +29,11 @@ async def lifespan(app: FastAPI):
     import asyncio
 
     settings = get_settings()
+    if settings.container_runner == "github_actions" and not settings.pantry_callback_signing_key:
+        raise RuntimeError(
+            "PANTRY_CALLBACK_SIGNING_KEY is required when PANTRY_CONTAINER_RUNNER=github_actions. "
+            "Set it to a 32+ byte secret shared with the jarvis-pantry-runner GHA environment.",
+        )
     await validation_queue.start(num_workers=settings.max_concurrent_container_tests)
 
     # Sweep stale temp dirs from crashed runs

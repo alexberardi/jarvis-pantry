@@ -220,7 +220,7 @@ class TestAwaitingContainerStamping:
         dispatch_mock = AsyncMock(return_value=RunnerDispatch(
             result=None,
             external_run_url="https://github.com/x/y/actions/runs/1",
-            callback_token="tok",
+            callback_nonce="tok",
         ))
         fake_runner = MagicMock()
         fake_runner.dispatch = dispatch_mock
@@ -272,7 +272,7 @@ class TestAwaitingContainerStamping:
         dispatch_mock = AsyncMock(return_value=RunnerDispatch(
             result=None,
             external_run_url="https://github.com/x/y/actions/runs/2",
-            callback_token="tok2",
+            callback_nonce="tok2",
         ))
         fake_runner = MagicMock()
         fake_runner.dispatch = dispatch_mock

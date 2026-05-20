@@ -94,7 +94,7 @@ async def _retry_submission(db: Session, submission: Submission) -> bool:
         repo_url=repo_url,
     )
     submission.external_run_url = dispatch.external_run_url
-    submission.callback_token = dispatch.callback_token
+    submission.callback_nonce = dispatch.callback_nonce
     submission.awaiting_container_since = _now()
     submission.dispatch_attempts = (submission.dispatch_attempts or 0) + 1
     db.commit()

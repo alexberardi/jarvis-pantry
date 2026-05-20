@@ -28,12 +28,12 @@ class RunnerDispatch:
 
     - Synchronous runners return `result` populated and `pending` False.
     - Async runners return `pending` True with an `external_run_url` and a
-      `callback_token` the remote runner will include in its callback.
+      `callback_nonce` the remote runner mixes into its HMAC signature.
     """
 
     result: ContainerTestResult | None
     external_run_url: str | None = None
-    callback_token: str | None = None
+    callback_nonce: str | None = None
 
     @property
     def pending(self) -> bool:
@@ -81,8 +81,10 @@ class GitHubActionsRunner:
 
     The workflow runs the SDK harness against the submitted repo on an
     isolated Actions VM, then POSTs the result to
-    `{base_url}/v1/submissions/{id}/container-result` with the per-dispatch
-    `X-Pantry-Token` header.
+    `{base_url}/v1/submissions/{id}/container-result` with an
+    `X-Pantry-HMAC` header computed over the request body, keyed by
+    `pantry_callback_signing_key` and mixed with the per-submission nonce
+    we generate here.
 
     `workflow_dispatch` doesn't return a run id, so `external_run_url`
     points at the workflow's run listing — users can find their submission
@@ -103,11 +105,15 @@ class GitHubActionsRunner:
             raise RuntimeError("PANTRY_GH_TOKEN is not set — cannot dispatch GitHub Actions runner")
         if not settings.pantry_callback_base_url:
             raise RuntimeError("PANTRY_CALLBACK_BASE_URL is not set — runner would have nowhere to call back")
+        if not settings.pantry_callback_signing_key:
+            raise RuntimeError(
+                "PANTRY_CALLBACK_SIGNING_KEY is not set — runner-side HMAC would not verify",
+            )
 
         owner_repo = settings.pantry_runner_repo
         workflow = settings.pantry_runner_workflow
         ref = settings.pantry_runner_ref
-        token = secrets.token_urlsafe(32)
+        nonce = secrets.token_urlsafe(32)
         callback_url = (
             f"{settings.pantry_callback_base_url.rstrip('/')}"
             f"/v1/submissions/{submission_id}/container-result"
@@ -120,7 +126,7 @@ class GitHubActionsRunner:
                 "repo_url": repo_url,
                 "submission_id": str(submission_id),
                 "callback_url": callback_url,
-                "callback_token": token,
+                "nonce": nonce,
                 "is_bundle": "true" if is_bundle else "false",
                 "lockfile_content": lockfile_content or "",
             },
@@ -146,7 +152,7 @@ class GitHubActionsRunner:
         )
 
         run_url = f"https://github.com/{owner_repo}/actions/workflows/{workflow}"
-        return RunnerDispatch(result=None, external_run_url=run_url, callback_token=token)
+        return RunnerDispatch(result=None, external_run_url=run_url, callback_nonce=nonce)
 
 
 def get_runner() -> ContainerTestRunner:

@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     pantry_runner_workflow: str = Field("container-test.yml", alias="PANTRY_RUNNER_WORKFLOW")
     pantry_runner_ref: str = Field("main", alias="PANTRY_RUNNER_REF")
     pantry_callback_base_url: str = Field("", alias="PANTRY_CALLBACK_BASE_URL")
+    pantry_callback_signing_key: str = Field("", alias="PANTRY_CALLBACK_SIGNING_KEY")
 
     model_config = SettingsConfigDict(
         env_file=".env",

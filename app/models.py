@@ -217,10 +217,11 @@ class Submission(Base):
     submitted_at = Column(UtcDateTime(), default=_utcnow)
     completed_at = Column(UtcDateTime())
     # Async container-test dispatch: set when a runner kicks off an external test
-    # (e.g. GitHub Actions). Callback uses callback_token to authenticate and
-    # finalize the submission using dispatch_context.
+    # (e.g. GitHub Actions). Callback authenticates via HMAC over the request
+    # body keyed by PANTRY_CALLBACK_SIGNING_KEY; callback_nonce is the
+    # per-submission value mixed into the HMAC and cleared after finalize.
     external_run_url = Column(String(512), nullable=True)
-    callback_token = Column(String(64), nullable=True)
+    callback_nonce = Column(String(64), nullable=True)
     dispatch_context = Column(JSON, nullable=True)
     # Set at every awaiting_container transition (initial dispatch + each watcher
     # retry). The callback-timeout watcher (#22) uses (now - this) to decide
