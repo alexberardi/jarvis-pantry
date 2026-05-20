@@ -68,6 +68,65 @@ class TestValidateStructure:
         with pytest.raises(RepoValidationError, match="version"):
             validate_structure(repo)
 
+    def test_apt_packages_absent_is_accepted(self, tmp_path):
+        """No apt_packages key in manifest is the default and must not break parsing."""
+        repo = self._create_repo(tmp_path)
+        manifest = validate_structure(repo)
+        # Absent → key simply isn't materialized; node-side reader treats as empty.
+        assert "apt_packages" not in manifest or manifest["apt_packages"] == []
+
+    def test_apt_packages_empty_list_is_accepted(self, tmp_path):
+        repo = self._create_repo(tmp_path, {
+            "jarvis_command.yaml": yaml.dump({
+                "name": "test", "description": "T", "version": "1.0.0",
+                "apt_packages": [],
+            }),
+        })
+        manifest = validate_structure(repo)
+        assert manifest["apt_packages"] == []
+
+    def test_apt_packages_list_of_strings_passes(self, tmp_path):
+        repo = self._create_repo(tmp_path, {
+            "jarvis_command.yaml": yaml.dump({
+                "name": "test", "description": "T", "version": "1.0.0",
+                "apt_packages": ["mpv", "ffmpeg"],
+            }),
+        })
+        manifest = validate_structure(repo)
+        assert manifest["apt_packages"] == ["mpv", "ffmpeg"]
+
+    def test_apt_packages_null_normalized_to_empty_list(self, tmp_path):
+        """A YAML-null entry is treated as 'no apt deps' rather than rejected —
+        keeps manifests valid when authors comment out the list."""
+        repo = self._create_repo(tmp_path, {
+            "jarvis_command.yaml": yaml.dump({
+                "name": "test", "description": "T", "version": "1.0.0",
+                "apt_packages": None,
+            }),
+        })
+        manifest = validate_structure(repo)
+        assert manifest["apt_packages"] == []
+
+    def test_apt_packages_wrong_outer_type_rejected(self, tmp_path):
+        repo = self._create_repo(tmp_path, {
+            "jarvis_command.yaml": yaml.dump({
+                "name": "test", "description": "T", "version": "1.0.0",
+                "apt_packages": "mpv",  # str instead of list
+            }),
+        })
+        with pytest.raises(RepoValidationError, match="apt_packages.*must be a list"):
+            validate_structure(repo)
+
+    def test_apt_packages_non_string_entry_rejected(self, tmp_path):
+        repo = self._create_repo(tmp_path, {
+            "jarvis_command.yaml": yaml.dump({
+                "name": "test", "description": "T", "version": "1.0.0",
+                "apt_packages": ["mpv", 42],
+            }),
+        })
+        with pytest.raises(RepoValidationError, match="apt_packages.*entries must be strings"):
+            validate_structure(repo)
+
 
 class TestReadCommandSource:
     def test_reads_source(self, tmp_path):

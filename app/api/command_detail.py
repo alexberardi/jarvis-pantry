@@ -37,6 +37,12 @@ def get_command(command_name: str, db: Session = Depends(get_db)):
                 "reviewed_at": report.reviewed_at.isoformat() if report.reviewed_at else None,
             }
 
+    apt_packages: list[str] = []
+    if latest_version and isinstance(latest_version.manifest_json, dict):
+        raw_apt = latest_version.manifest_json.get("apt_packages")
+        if isinstance(raw_apt, list):
+            apt_packages = [str(p) for p in raw_apt if isinstance(p, str)]
+
     # Get reviews
     reviews = db.query(Review).filter(Review.command_id == cmd.id).all()
     avg_rating = sum(r.rating for r in reviews) / len(reviews) if reviews else None
@@ -61,6 +67,7 @@ def get_command(command_name: str, db: Session = Depends(get_db)):
         "icon_url": cmd.icon_url,
         "package_type": cmd.package_type or "command",
         "components": cmd.components or [],
+        "apt_packages": apt_packages,
         "created_at": cmd.created_at.isoformat() if cmd.created_at else None,
         "updated_at": cmd.updated_at.isoformat() if cmd.updated_at else None,
         "security_report": security_report,

@@ -79,6 +79,26 @@ def validate_structure(repo_dir: Path) -> dict[str, Any]:
         if not manifest.get(field):
             raise RepoValidationError(f"Manifest missing required field: {field}")
 
+    # apt_packages: optional list[str]. Allow-list enforcement happens later
+    # in static_analysis (#16); here we only enforce the shape so downstream
+    # readers (mobile consent UI, node install pipeline) can trust the type.
+    if "apt_packages" in manifest:
+        apt_packages = manifest["apt_packages"]
+        if apt_packages is None:
+            manifest["apt_packages"] = []
+        elif not isinstance(apt_packages, list):
+            raise RepoValidationError(
+                "Manifest 'apt_packages' must be a list of strings, "
+                f"got {type(apt_packages).__name__}",
+            )
+        else:
+            for entry in apt_packages:
+                if not isinstance(entry, str):
+                    raise RepoValidationError(
+                        "Manifest 'apt_packages' entries must be strings, "
+                        f"got {type(entry).__name__}: {entry!r}",
+                    )
+
     # Infer components from repo structure if not declared
     components = manifest.get("components", [])
     if not components:
