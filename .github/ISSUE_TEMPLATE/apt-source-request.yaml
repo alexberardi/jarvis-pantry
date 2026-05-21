@@ -1,0 +1,78 @@
+name: Apt source request
+description: Request a new 3rd-party apt source (key + repo) be added to the Pantry submission allow-list.
+title: "Add <name> to apt-source-allowlist"
+labels:
+  - apt-source-allowlist-request
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to request a new entry in `config/apt-source-allowlist.yaml`.
+        Once approved, a community submission can declare it in `apt_sources:`
+        and the node will register the source (signing key + `sources.list`
+        entry) before installing the apt packages that depend on it.
+
+        Allow-list entries match the manifest's `(name, key_url, repo)` triple
+        exactly — submissions with a near-miss on any field are rejected.
+
+  - type: input
+    id: name
+    attributes:
+      label: Source name
+      description: "Short identifier (lowercase, `^[a-z][a-z0-9._-]*$`). Used as the filename stem for the key + sources.list."
+      placeholder: "raspotify"
+    validations:
+      required: true
+
+  - type: input
+    id: key_url
+    attributes:
+      label: Signing key URL
+      description: "HTTPS URL to the ASCII-armored GPG public key (`.asc` file)."
+      placeholder: "https://example.com/key.asc"
+    validations:
+      required: true
+
+  - type: input
+    id: repo
+    attributes:
+      label: deb sources.list entry
+      description: "Full line starting with `deb` (or `deb-src`). Paste as it should appear in `/etc/apt/sources.list.d/<name>.list`."
+      placeholder: "deb https://example.com/repo stable main"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reason
+    attributes:
+      label: Why does Pantry need this source?
+      description: |
+        What's in the repo, why isn't the package in Debian's main repos,
+        and which kind of community command needs it? One or two sentences.
+      placeholder: |
+        Example: dtcooper/raspotify ships librespot for armhf/arm64 Pi
+        targets. Debian Trixie has no librespot package, and the spotify
+        command needs it as a Spotify Connect daemon.
+    validations:
+      required: true
+
+  - type: input
+    id: example_command
+    attributes:
+      label: Example community command that would use it
+      description: "Link to a draft submission, repo, or short description."
+      placeholder: "https://github.com/your-user/jarvis-command-…"
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: "I confirmed the source is not already on the allow-list (`config/apt-source-allowlist.yaml`)."
+          required: true
+        - label: "I checked there isn't an existing open request for this source."
+          required: true
+        - label: "The signing key URL is HTTPS and stable (not a redirector or short-lived release artifact)."
+          required: true

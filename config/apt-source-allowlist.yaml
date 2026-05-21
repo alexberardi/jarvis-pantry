@@ -1,0 +1,22 @@
+# Curated 3rd-party apt-source allow-list for Jarvis community submissions.
+#
+# This list is the source of truth for what `apt_sources:` entries are
+# permitted in a submitted `jarvis_command.yaml`. Submissions are rejected
+# at submission time by `app/services/static_analysis._validate_apt_source_allowlist`
+# unless every declared source matches an entry below exactly on all three
+# fields (name, key_url, repo). A typo or substituted URL fails the check
+# even when the name is recognized.
+#
+# Adding a source: open an issue using the
+# `.github/ISSUE_TEMPLATE/apt-source-request.yaml` template, then update
+# this file in the same PR that resolves the request.
+#
+# Removing a source: existing submissions stay accepted (Option 1 — no
+# retroactive invalidation). New submissions stop being able to declare it.
+sources:
+  - name: raspotify
+    key_url: "https://dtcooper.github.io/raspotify/key.asc"
+    repo: "deb https://dtcooper.github.io/raspotify raspotify main"
+    reason: "Provides librespot (Spotify Connect daemon) for the spotify command. Debian Trixie ships no native spotifyd/librespot package."
+    added_by: alex
+    added_at: "2026-05-21"

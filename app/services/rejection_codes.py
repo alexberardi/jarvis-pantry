@@ -53,6 +53,10 @@ ROUTINE_INVALID_JSON = "routine_invalid_json"
 # Submitted-pypi / apt (lands with #16 — pre-registered here)
 APT_PACKAGE_NOT_ON_ALLOWLIST = "apt_package_not_on_allowlist"
 
+# apt_sources — 3rd-party source-registration (key URL + repo line)
+APT_SOURCE_NOT_ON_ALLOWLIST = "apt_source_not_on_allowlist"
+APT_SOURCE_MISMATCH = "apt_source_mismatch"
+
 # Post-install ops (#19)
 POST_INSTALL_OP_UNKNOWN_TYPE = "post_install_op_unknown_type"
 POST_INSTALL_OP_MISSING_TARGET = "post_install_op_missing_target"
@@ -94,6 +98,8 @@ ALL_REASON_CODES: frozenset[str] = frozenset({
     ROUTINE_STEP_MISSING_COMMAND,
     ROUTINE_INVALID_JSON,
     APT_PACKAGE_NOT_ON_ALLOWLIST,
+    APT_SOURCE_NOT_ON_ALLOWLIST,
+    APT_SOURCE_MISMATCH,
     POST_INSTALL_OP_UNKNOWN_TYPE,
     POST_INSTALL_OP_MISSING_TARGET,
     POST_INSTALL_OP_NOT_ON_ALLOWLIST,

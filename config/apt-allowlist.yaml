@@ -60,3 +60,7 @@ packages:
     reason: "AirPlay receiver — turns the node into an AirPlay-discoverable speaker for any AirPlay source."
     added_by: alex
     added_at: "2026-05-19"
+  - name: raspotify
+    reason: "Ships librespot (the Spotify Connect daemon) for the spotify command. Sourced from the dtcooper/raspotify apt repo configured by jarvis-node-setup/install.sh."
+    added_by: alex
+    added_at: "2026-05-21"

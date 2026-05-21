@@ -16,6 +16,10 @@ from typing import Any
 
 from . import rejection_codes as rc
 from .apt_allowlist import get_allowlist, request_url_for
+from .apt_source_allowlist import (
+    get_allowlist as get_apt_source_allowlist,
+    request_url_for as apt_source_request_url_for,
+)
 from .post_install_allowlist import (
     get_allowlist as get_post_install_allowlist,
     request_url_for as post_install_request_url_for,
@@ -412,6 +416,7 @@ def run_static_analysis(repo_dir: Path) -> StaticAnalysisResult:
     if manifest:
         _validate_manifest_deep(manifest, result)
         _validate_apt_allowlist(manifest, result)
+        _validate_apt_source_allowlist(manifest, result)
         _validate_post_install_allowlist(manifest, result)
 
     return result
@@ -776,6 +781,102 @@ def _validate_apt_allowlist(manifest: dict[str, Any], result: StaticAnalysisResu
             rc.APT_PACKAGE_NOT_ON_ALLOWLIST, "error",
             primitive="apt", value=entry, message=msg,
         ))
+
+
+def _validate_apt_source_allowlist(
+    manifest: dict[str, Any], result: StaticAnalysisResult,
+) -> None:
+    """Reject submissions declaring apt sources whose (name, key_url, repo) triple isn't on the allow-list.
+
+    An off-list `name` → ``APT_SOURCE_NOT_ON_ALLOWLIST`` with a one-click
+    GH issue link to request it. A known name with a mismatched key_url or
+    repo → ``APT_SOURCE_MISMATCH`` (the typical "typo or substitution"
+    case) — fail closed; don't silently accept a near-miss.
+    """
+    if "apt_sources" not in manifest:
+        return
+
+    apt_sources = manifest["apt_sources"]
+
+    if not isinstance(apt_sources, list):
+        msg = (
+            f"manifest 'apt_sources' must be a list of source objects, "
+            f"got {type(apt_sources).__name__}"
+        )
+        result.errors.append(msg)
+        result.passed = False
+        result.add_finding(make_finding(
+            rc.MANIFEST_INVALID_FIELD_TYPE, "error",
+            value="apt_sources", message=msg,
+        ))
+        return
+
+    if not apt_sources:
+        return
+
+    allowlist = get_apt_source_allowlist()
+    for entry in apt_sources:
+        if not isinstance(entry, dict):
+            msg = (
+                f"manifest 'apt_sources' entry must be an object with "
+                f"name/key_url/repo, got {entry!r}"
+            )
+            result.errors.append(msg)
+            result.passed = False
+            result.add_finding(make_finding(
+                rc.MANIFEST_INVALID_FIELD_TYPE, "error",
+                value="apt_sources", message=msg,
+            ))
+            continue
+
+        name = entry.get("name")
+        key_url = entry.get("key_url")
+        repo = entry.get("repo")
+        if not (isinstance(name, str) and name
+                and isinstance(key_url, str) and key_url
+                and isinstance(repo, str) and repo):
+            msg = (
+                f"manifest 'apt_sources' entry missing name/key_url/repo: {entry!r}"
+            )
+            result.errors.append(msg)
+            result.passed = False
+            result.add_finding(make_finding(
+                rc.MANIFEST_INVALID_FIELD_TYPE, "error",
+                value="apt_sources", message=msg,
+            ))
+            continue
+
+        listed = allowlist.find(name)
+        if listed is None:
+            request_url = apt_source_request_url_for(name)
+            msg = (
+                f"apt source '{name}' is not on the Pantry allow-list. "
+                f"Request it at {request_url}"
+            )
+            result.errors.append(msg)
+            result.passed = False
+            result.add_finding(make_finding(
+                rc.APT_SOURCE_NOT_ON_ALLOWLIST, "error",
+                primitive="apt_source", value=name, message=msg,
+            ))
+            continue
+
+        # Name is recognized — require an exact match on key_url + repo.
+        # A near-miss almost always indicates a typo or a substitution
+        # attempt; fail closed and force the author to either match
+        # exactly or open an issue to amend the allow-list.
+        if listed.key_url != key_url or listed.repo != repo:
+            msg = (
+                f"apt source '{name}' does not match the allow-list entry "
+                f"on key_url and/or repo. Expected key_url={listed.key_url!r}, "
+                f"repo={listed.repo!r}; got key_url={key_url!r}, repo={repo!r}."
+            )
+            result.errors.append(msg)
+            result.passed = False
+            result.add_finding(make_finding(
+                rc.APT_SOURCE_MISMATCH, "error",
+                primitive="apt_source", value=name, message=msg,
+            ))
 
 
 def _validate_post_install_allowlist(
