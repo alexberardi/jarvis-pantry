@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir .
 COPY app/ app/
 COPY alembic/ alembic/
 COPY alembic.ini .
+COPY config/ config/
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
