@@ -1,8 +1,17 @@
 """Resolve a submission's ``packages: [...]`` list into a frozen lockfile (#21).
 
 Invokes ``uv pip compile`` synchronously at submission acceptance and returns
-a string lockfile (pinned, with hashes). The runner-side workflow installs
-exactly what's in the lockfile — no live PyPI resolution at run time.
+a string lockfile of pinned ``name==version`` lines. The runner-side workflow
+installs exactly what's in the lockfile — no live PyPI resolution at run time.
+
+We deliberately do NOT request ``--generate-hashes``. With hashes enabled, a
+single mid-sized dep tree (e.g. ``music-assistant-client``, ~14 transitive
+deps) produces a ~60KB lockfile because every wheel + sdist artifact emits its
+own ``--hash=sha256:...`` line, and that blows past the GitHub Actions
+``workflow_dispatch`` input cap (~64KB total). Without hashes the same tree
+fits in <1KB. Version pinning still locks the resolved tree; supply-chain
+integrity beyond pinning is delegated to PyPI + TLS + the resolve-at-submission
+acceptance gate.
 
 Raises ``LockfileResolutionError`` on subprocess non-zero exit or timeout, and
 ``LockfileTooLargeError`` when the resolved output exceeds the size cap.
@@ -15,7 +24,9 @@ from collections.abc import Iterable
 
 # GHA ``workflow_dispatch`` total input size is ~64KB. Reserve ~14KB for other
 # inputs (submission_id, callback URL, nonce, future fields); cap the lockfile
-# at 50KB to leave headroom. Exclusive (i.e. exactly 50KB passes).
+# at 50KB to leave headroom. With hashless lockfiles this cap is comfortably
+# above any realistic resolution — it stays in place as a defensive guard
+# against pathological dependency trees. Exclusive (i.e. exactly 50KB passes).
 LOCKFILE_SIZE_CAP_BYTES = 50 * 1024
 
 # Bound on the subprocess. Real-world resolves take 1–5s with a warm cache;
@@ -42,7 +53,6 @@ def resolve_lockfile(packages: Iterable[str]) -> str:
 
     cmd = [
         "uv", "pip", "compile",
-        "--generate-hashes",
         "--no-header",
         "-",  # read requirements from stdin
     ]
