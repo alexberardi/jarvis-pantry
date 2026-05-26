@@ -39,7 +39,7 @@ VALID_PARAM_TYPES: set[str] = {
     "string", "int", "float", "bool", "enum", "date", "time", "datetime",
 }
 
-VALID_SECRET_SCOPES: set[str] = {"integration", "node"}
+VALID_SECRET_SCOPES: set[str] = {"integration", "user"}
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 

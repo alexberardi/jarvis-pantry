@@ -271,11 +271,25 @@ class TestManifestValidation:
     def test_valid_secret_scopes(self, tmp_path):
         manifest = {
             "name": "test", "description": "test", "version": "1.0.0",
-            "secrets": [{"key": "API_KEY", "scope": "integration"}],
+            "secrets": [
+                {"key": "API_KEY", "scope": "integration"},
+                {"key": "USER_TOKEN", "scope": "user"},
+            ],
         }
         repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
         result = run_static_analysis(repo)
         assert not any("scope" in w for w in result.warnings)
+
+    def test_node_scope_now_warns(self, tmp_path):
+        # "node" scope was collapsed into "integration"; manifests still
+        # declaring it should warn so authors notice.
+        manifest = {
+            "name": "test", "description": "test", "version": "1.0.0",
+            "secrets": [{"key": "API_KEY", "scope": "node"}],
+        }
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert any("scope" in w and "node" in w for w in result.warnings)
 
 
 VALID_AGENT = """\
