@@ -259,14 +259,17 @@ class TestManifestValidation:
         result = run_static_analysis(repo)
         assert any("param_type" in w for w in result.warnings)
 
-    def test_unknown_secret_scope_warns(self, tmp_path):
+    def test_unknown_secret_scope_blocks_submission(self, tmp_path):
+        # Invalid scope crashes the snapshot pipeline on the node, so the
+        # Pantry rejects the submission rather than letting bad packages ship.
         manifest = {
             "name": "test", "description": "test", "version": "1.0.0",
             "secrets": [{"key": "API_KEY", "scope": "global"}],
         }
         repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
         result = run_static_analysis(repo)
-        assert any("scope" in w for w in result.warnings)
+        assert result.passed is False
+        assert any("scope" in e for e in result.errors)
 
     def test_valid_secret_scopes(self, tmp_path):
         manifest = {
@@ -279,17 +282,95 @@ class TestManifestValidation:
         repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
         result = run_static_analysis(repo)
         assert not any("scope" in w for w in result.warnings)
+        assert not any("scope" in e for e in result.errors)
 
-    def test_node_scope_now_warns(self, tmp_path):
+    def test_node_scope_now_blocks_submission(self, tmp_path):
         # "node" scope was collapsed into "integration"; manifests still
-        # declaring it should warn so authors notice.
+        # declaring it must be rejected because the node SDK validator will
+        # raise on instantiation and break the snapshot for the whole device.
         manifest = {
             "name": "test", "description": "test", "version": "1.0.0",
             "secrets": [{"key": "API_KEY", "scope": "node"}],
         }
         repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
         result = run_static_analysis(repo)
-        assert any("scope" in w and "node" in w for w in result.warnings)
+        assert result.passed is False
+        assert any("scope" in e and "node" in e for e in result.errors)
+
+
+class TestPythonSourceSecretScope:
+    """The manifest-only scope check misses packages that declare secrets
+    inline via `JarvisSecret(...)` calls in Python source. Static analysis
+    must AST-scan source files too — a `node` scope hardcoded in agent.py
+    crashes the snapshot just as hard as one in the manifest.
+    """
+
+    def _command_with_inline_secret(self, scope_literal: str, positional: bool = True) -> str:
+        if positional:
+            secret_call = f'JarvisSecret("API_KEY", "An API key", "{scope_literal}", "string", is_sensitive=True)'
+        else:
+            secret_call = f'JarvisSecret("API_KEY", "An API key", scope="{scope_literal}", value_type="string", is_sensitive=True)'
+        return f"""\
+from jarvis_command_sdk import IJarvisCommand, JarvisSecret
+
+class TestCommand(IJarvisCommand):
+    @property
+    def command_name(self):
+        return "test_cmd"
+
+    @property
+    def description(self):
+        return "A test command"
+
+    @property
+    def parameters(self):
+        return []
+
+    @property
+    def required_secrets(self):
+        return [{secret_call}]
+
+    @property
+    def keywords(self):
+        return ["test"]
+
+    def run(self, request_info, **kwargs):
+        return {{"status": "ok"}}
+
+    def generate_prompt_examples(self):
+        return []
+
+    def generate_adapter_examples(self):
+        return []
+"""
+
+    def test_inline_node_scope_positional_blocks_submission(self, tmp_path):
+        repo = _make_repo(tmp_path, self._command_with_inline_secret("node", positional=True))
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("JarvisSecret" in e and "node" in e for e in result.errors)
+
+    def test_inline_node_scope_keyword_blocks_submission(self, tmp_path):
+        repo = _make_repo(tmp_path, self._command_with_inline_secret("node", positional=False))
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("JarvisSecret" in e and "node" in e for e in result.errors)
+
+    def test_inline_unknown_scope_blocks_submission(self, tmp_path):
+        repo = _make_repo(tmp_path, self._command_with_inline_secret("global"))
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("JarvisSecret" in e and "global" in e for e in result.errors)
+
+    def test_inline_integration_scope_passes(self, tmp_path):
+        repo = _make_repo(tmp_path, self._command_with_inline_secret("integration"))
+        result = run_static_analysis(repo)
+        assert not any("JarvisSecret" in e for e in result.errors)
+
+    def test_inline_user_scope_passes(self, tmp_path):
+        repo = _make_repo(tmp_path, self._command_with_inline_secret("user"))
+        result = run_static_analysis(repo)
+        assert not any("JarvisSecret" in e for e in result.errors)
 
 
 VALID_AGENT = """\

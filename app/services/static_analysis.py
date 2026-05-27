@@ -525,6 +525,25 @@ def _snippet_for_line(source: str | None, line: int | None) -> str | None:
     return lines[line - 1].strip()
 
 
+def _extract_jarvis_secret_scope(call: ast.Call) -> str | None:
+    """Read the literal `scope` arg from a `JarvisSecret(...)` call, if present.
+
+    Signature is ``JarvisSecret(key, description, scope, value_type, ...)``, so
+    positional index 2 is the scope. Returns the string literal, or None when
+    the scope is missing or computed (a variable or expression we can't resolve
+    statically — those slip past us and rely on the node-side runtime guard).
+    """
+    for kw in call.keywords:
+        if kw.arg == "scope" and isinstance(kw.value, ast.Constant):
+            v = kw.value.value
+            return v if isinstance(v, str) else None
+    if len(call.args) >= 3:
+        third = call.args[2]
+        if isinstance(third, ast.Constant) and isinstance(third.value, str):
+            return third.value
+    return None
+
+
 def _find_dangerous_patterns(
     tree: ast.Module,
     *,
@@ -565,6 +584,24 @@ def _find_dangerous_patterns(
                     hard_fail_errors.append(
                         f"Disallowed primitive: {call_name} (rejected by security policy)"
                     )
+
+            # JarvisSecret(scope=...) — bad scope crashes the snapshot on the
+            # node (SDK validator raises). Manifest-only check missed packages
+            # that hardcoded "node" in Python while having a correct manifest.
+            if call_name and call_name.endswith("JarvisSecret"):
+                scope_value = _extract_jarvis_secret_scope(node)
+                if scope_value is not None and scope_value not in VALID_SECRET_SCOPES:
+                    msg = (
+                        f"Invalid JarvisSecret scope {scope_value!r} (must be one of "
+                        f"{sorted(VALID_SECRET_SCOPES)})"
+                    )
+                    patterns.append(msg)
+                    findings.append(make_finding(
+                        rc.MANIFEST_UNKNOWN_SECRET_SCOPE, "error",
+                        file=file, line=line, snippet=snippet,
+                        value=scope_value, message=msg,
+                    ))
+                    hard_fail_errors.append(msg)
 
         # Imports
         elif isinstance(node, ast.Import):
@@ -712,17 +749,25 @@ def _validate_manifest_deep(manifest: dict[str, Any], result: StaticAnalysisResu
                         value=str(pt), message=msg,
                     ))
 
-    # Secrets validation
+    # Secrets validation — bad scopes block the snapshot pipeline on the
+    # node (the SDK validator raises ValueError on instantiation), so a
+    # package with an invalid scope is unshippable. Rejecting at publish
+    # time is the only way to keep stale "node" scopes out of the catalog.
     secrets = manifest.get("secrets", [])
     if isinstance(secrets, list):
         for secret in secrets:
             if isinstance(secret, dict):
                 scope = secret.get("scope")
                 if scope and scope not in VALID_SECRET_SCOPES:
-                    msg = f"Unknown secret scope: {scope} for key {secret.get('key', '?')}"
-                    result.warnings.append(msg)
+                    msg = (
+                        f"Invalid secret scope: {scope!r} for key "
+                        f"{secret.get('key', '?')}. Must be one of: "
+                        f"{sorted(VALID_SECRET_SCOPES)}"
+                    )
+                    result.errors.append(msg)
+                    result.passed = False
                     result.add_finding(make_finding(
-                        rc.MANIFEST_UNKNOWN_SECRET_SCOPE, "warning",
+                        rc.MANIFEST_UNKNOWN_SECRET_SCOPE, "error",
                         value=str(scope), message=msg,
                     ))
 
