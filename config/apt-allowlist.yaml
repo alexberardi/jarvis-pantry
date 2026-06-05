@@ -64,3 +64,7 @@ packages:
     reason: "Ships librespot (the Spotify Connect daemon) for the spotify command. Sourced from the dtcooper/raspotify apt repo configured by jarvis-node-setup/install.sh."
     added_by: alex
     added_at: "2026-05-21"
+  - name: mpd
+    reason: "Music Player Daemon — direct-stream playback backend for the audacy command. Lightweight (~10MB resident), suitable for Pi Zero."
+    added_by: alex
+    added_at: "2026-06-05"

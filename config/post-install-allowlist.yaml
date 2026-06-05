@@ -21,6 +21,10 @@ configure_systemd_service:
     reason: "Per-node config for AirPlay receiver — User=jarvis_user + pulse env so audio routes through the node's session."
     added_by: alex
     added_at: "2026-05-20"
+  - service: mpd
+    reason: "Per-node config for mpd (audacy) — User=jarvis_user + pulse env + MPDCONF pointing at the package's audacy_shared/audacy_mpd.conf so the system /etc/mpd.conf is left untouched (it ships with a user \"mpd\" directive and mpd-owned /var/lib/mpd dirs that would otherwise need root to override)."
+    added_by: alex
+    added_at: "2026-06-05"
 
 # Entries for op type `set_config_file_value`. Each entry names a config
 # file (full absolute path) a package is allowed to modify. Limit this to
