@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pantry Operator — Bulk Upload</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #181b22;
+    --panel-2: #1f2330;
+    --border: #2a2f3d;
+    --text: #e5e9f0;
+    --muted: #8b93a7;
+    --accent: #7aa2f7;
+    --good: #9ece6a;
+    --warn: #e0af68;
+    --bad: #f7768e;
+    --link: #7aa2f7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  h2 { font-size: 16px; margin: 0 0 12px; color: var(--muted); }
+  .layout { max-width: 1100px; margin: 0 auto; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input[type="text"], input[type="password"], select, textarea {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font: inherit;
+  }
+  input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  button {
+    background: var(--accent); color: #0f1115; border: 0;
+    padding: 8px 14px; border-radius: 6px; cursor: pointer; font-weight: 600;
+  }
+  button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); font-weight: 400; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .row { display: flex; gap: 12px; align-items: end; }
+  .row > * { flex: 1; }
+  .row > button { flex: 0 0 auto; }
+  .repos {
+    max-height: 360px; overflow-y: auto;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel-2);
+  }
+  .repo-row {
+    display: flex; gap: 10px; align-items: center;
+    padding: 6px 12px; border-bottom: 1px solid var(--border);
+  }
+  .repo-row:last-child { border-bottom: 0; }
+  .repo-row label { margin: 0; color: var(--text); font-size: 14px; flex: 1; cursor: pointer; }
+  .repo-row .meta { color: var(--muted); font-size: 12px; }
+  .pill {
+    display: inline-block; padding: 1px 6px; border-radius: 999px;
+    font-size: 11px; background: var(--panel); color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  .pill.private { background: #3a2e1f; color: var(--warn); border-color: #5a4424; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; }
+  .status-passed { color: var(--good); }
+  .status-failed, .status-rejected, .status-callback_timeout { color: var(--bad); }
+  .status-in_progress, .status-ai_review, .status-container_test, .status-awaiting_container, .status-static_analysis, .status-pending { color: var(--warn); }
+  .status-published { color: var(--good); font-weight: 600; }
+  .muted { color: var(--muted); }
+  .err { color: var(--bad); margin-top: 8px; }
+  .hide { display: none; }
+  .filter-bar { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+  .filter-bar input { flex: 1; }
+  .summary {
+    display: flex; gap: 12px; margin-bottom: 12px;
+  }
+  .summary .stat {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 12px;
+  }
+  .summary .stat b { font-size: 18px; display: block; }
+  .small { font-size: 12px; }
+  a { color: var(--link); }
+  details { background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; }
+  details summary { cursor: pointer; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="layout">
+  <h1>Pantry Operator — Bulk Upload</h1>
+  <h2>Submit many GitHub repos for AI review + container testing in one go.</h2>
+
+  <!-- Auth panel -->
+  <div class="panel" id="authPanel">
+    <div class="row">
+      <div>
+        <label for="adminKey">Admin key (ADMIN_API_KEY)</label>
+        <input id="adminKey" type="password" autocomplete="off" placeholder="X-Admin-Key value" />
+      </div>
+      <button id="saveAdmin">Save</button>
+    </div>
+    <div style="margin-top: 12px;">
+      <button id="loginGithub" class="secondary">Login with GitHub</button>
+      <span id="userLabel" class="muted small" style="margin-left: 12px;"></span>
+      <button id="logoutGithub" class="secondary hide" style="margin-left: 8px;">Logout</button>
+    </div>
+    <div id="authErr" class="err"></div>
+  </div>
+
+  <!-- Repo picker -->
+  <div class="panel hide" id="repoPanel">
+    <div class="filter-bar">
+      <input id="repoFilter" type="text" placeholder="Filter repos…" />
+      <button id="reloadRepos" class="secondary">Reload</button>
+      <button id="selectAll" class="secondary">All</button>
+      <button id="selectNone" class="secondary">None</button>
+    </div>
+    <div id="repoList" class="repos"></div>
+    <div class="muted small" id="repoSummary" style="margin-top: 8px;"></div>
+  </div>
+
+  <!-- LLM + submit -->
+  <div class="panel hide" id="submitPanel">
+    <div class="row">
+      <div>
+        <label for="llmProvider">LLM provider</label>
+        <select id="llmProvider">
+          <option value="claude">Claude (Anthropic)</option>
+          <option value="openai">OpenAI</option>
+        </select>
+      </div>
+      <div style="flex: 3;">
+        <label for="llmKey">LLM API key (BYOK)</label>
+        <input id="llmKey" type="password" autocomplete="off" placeholder="sk-ant-... or sk-..." />
+      </div>
+      <button id="submitBatch">Submit batch</button>
+    </div>
+    <div id="submitErr" class="err"></div>
+  </div>
+
+  <!-- Status -->
+  <div class="panel hide" id="statusPanel">
+    <div class="row" style="align-items: center;">
+      <div>
+        <label>Batch ID</label>
+        <div><code id="batchIdLabel" class="muted"></code></div>
+      </div>
+      <button id="refreshStatus" class="secondary">Refresh now</button>
+    </div>
+    <div id="statusSummary" class="summary" style="margin-top: 12px;"></div>
+    <div id="statusTable"></div>
+  </div>
+</div>
+
+<script>
+const state = {
+  adminKey: sessionStorage.getItem("pantry_admin_key") || "",
+  githubToken: sessionStorage.getItem("pantry_github_token") || "",
+  githubUser: JSON.parse(sessionStorage.getItem("pantry_github_user") || "null"),
+  repos: [],
+  selected: new Set(),
+  batchId: null,
+  pollTimer: null,
+};
+
+const $ = (id) => document.getElementById(id);
+
+function showPanel(id, visible) {
+  $(id).classList.toggle("hide", !visible);
+}
+
+function setAuthErr(msg) { $("authErr").textContent = msg || ""; }
+function setSubmitErr(msg) { $("submitErr").textContent = msg || ""; }
+
+function refreshUserLabel() {
+  if (state.githubUser) {
+    $("userLabel").textContent = "Logged in as " + state.githubUser.github_username;
+    $("loginGithub").classList.add("hide");
+    $("logoutGithub").classList.remove("hide");
+  } else {
+    $("userLabel").textContent = "";
+    $("loginGithub").classList.remove("hide");
+    $("logoutGithub").classList.add("hide");
+  }
+}
+
+function showRepoPanelIfReady() {
+  const ready = state.adminKey && state.githubToken;
+  showPanel("repoPanel", ready);
+  showPanel("submitPanel", ready);
+  if (ready && state.repos.length === 0) {
+    loadRepos();
+  }
+}
+
+// ── Admin key ───────────────────────────────────────────────────────────
+$("adminKey").value = state.adminKey;
+$("saveAdmin").addEventListener("click", () => {
+  state.adminKey = $("adminKey").value.trim();
+  sessionStorage.setItem("pantry_admin_key", state.adminKey);
+  setAuthErr("");
+  showRepoPanelIfReady();
+});
+
+// ── GitHub OAuth ────────────────────────────────────────────────────────
+async function startGithubLogin() {
+  setAuthErr("");
+  const redirectUri = location.origin + location.pathname;
+  try {
+    const resp = await fetch(`/v1/operator/auth/github?redirect_uri=${encodeURIComponent(redirectUri)}`);
+    if (!resp.ok) throw new Error(`auth URL fetch ${resp.status}`);
+    const { url } = await resp.json();
+    location.href = url;
+  } catch (e) {
+    setAuthErr("GitHub login failed: " + e.message);
+  }
+}
+
+async function handleGithubCallback(code) {
+  setAuthErr("");
+  try {
+    const resp = await fetch("/v1/operator/auth/github/callback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`callback ${resp.status}: ${text}`);
+    }
+    const data = await resp.json();
+    state.githubToken = data.access_token;
+    state.githubUser = data.user;
+    sessionStorage.setItem("pantry_github_token", state.githubToken);
+    sessionStorage.setItem("pantry_github_user", JSON.stringify(state.githubUser));
+    // Strip ?code= from the URL so a refresh doesn't re-exchange a spent code.
+    history.replaceState({}, "", location.pathname);
+    refreshUserLabel();
+    showRepoPanelIfReady();
+  } catch (e) {
+    setAuthErr("OAuth callback failed: " + e.message);
+  }
+}
+
+$("loginGithub").addEventListener("click", startGithubLogin);
+$("logoutGithub").addEventListener("click", () => {
+  state.githubToken = "";
+  state.githubUser = null;
+  sessionStorage.removeItem("pantry_github_token");
+  sessionStorage.removeItem("pantry_github_user");
+  state.repos = [];
+  state.selected.clear();
+  renderRepos();
+  refreshUserLabel();
+  showRepoPanelIfReady();
+});
+
+// ── Load repos (browser → GitHub directly) ─────────────────────────────
+async function loadRepos() {
+  $("repoList").innerHTML = '<div class="repo-row muted">Loading…</div>';
+  try {
+    // /user/repos returns repos the authenticated user has access to.
+    // affiliation=owner restricts to repos they own (most common case for
+    // self-published commands). Sort by recent activity. 100 per page.
+    const resp = await fetch(
+      "https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner",
+      {
+        headers: {
+          "Authorization": `Bearer ${state.githubToken}`,
+          "Accept": "application/vnd.github+json",
+        },
+      },
+    );
+    if (!resp.ok) throw new Error(`GitHub ${resp.status}`);
+    const data = await resp.json();
+    state.repos = data.map(r => ({
+      owner_repo: r.full_name,
+      private: r.private,
+      description: r.description || "",
+      updated_at: r.updated_at,
+      default_branch: r.default_branch,
+    }));
+    renderRepos();
+  } catch (e) {
+    $("repoList").innerHTML = `<div class="repo-row err">Failed to load: ${e.message}</div>`;
+  }
+}
+
+$("reloadRepos").addEventListener("click", loadRepos);
+$("repoFilter").addEventListener("input", renderRepos);
+$("selectAll").addEventListener("click", () => {
+  for (const r of filteredRepos()) state.selected.add(r.owner_repo);
+  renderRepos();
+});
+$("selectNone").addEventListener("click", () => {
+  state.selected.clear();
+  renderRepos();
+});
+
+function filteredRepos() {
+  const q = $("repoFilter").value.trim().toLowerCase();
+  if (!q) return state.repos;
+  return state.repos.filter(r =>
+    r.owner_repo.toLowerCase().includes(q) ||
+    (r.description && r.description.toLowerCase().includes(q))
+  );
+}
+
+function renderRepos() {
+  const list = filteredRepos();
+  if (list.length === 0) {
+    $("repoList").innerHTML = '<div class="repo-row muted">No repos.</div>';
+  } else {
+    $("repoList").innerHTML = list.map(r => {
+      const id = "repo_" + r.owner_repo.replace(/[^a-z0-9]/gi, "_");
+      const checked = state.selected.has(r.owner_repo) ? "checked" : "";
+      const privatePill = r.private ? '<span class="pill private">private</span>' : "";
+      return `
+        <div class="repo-row">
+          <input type="checkbox" id="${id}" data-repo="${r.owner_repo}" ${checked} />
+          <label for="${id}">
+            <span>${r.owner_repo}</span> ${privatePill}
+            <div class="meta">${escapeHtml(r.description || "—")}</div>
+          </label>
+        </div>`;
+    }).join("");
+    for (const cb of $("repoList").querySelectorAll('input[type="checkbox"]')) {
+      cb.addEventListener("change", (e) => {
+        const r = e.target.dataset.repo;
+        if (e.target.checked) state.selected.add(r); else state.selected.delete(r);
+        updateRepoSummary();
+      });
+    }
+  }
+  updateRepoSummary();
+}
+
+function updateRepoSummary() {
+  const total = state.repos.length;
+  const visible = filteredRepos().length;
+  const selected = state.selected.size;
+  $("repoSummary").textContent = `${selected} selected · ${visible} of ${total} shown`;
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+
+// ── Submit batch ────────────────────────────────────────────────────────
+$("submitBatch").addEventListener("click", async () => {
+  setSubmitErr("");
+  const llmKey = $("llmKey").value.trim();
+  if (state.selected.size === 0) { setSubmitErr("Pick at least one repo."); return; }
+  if (!llmKey) { setSubmitErr("LLM API key required."); return; }
+  const provider = $("llmProvider").value;
+  const repos = [...state.selected].map(r => ({ owner_repo: r }));
+  $("submitBatch").disabled = true;
+  try {
+    const resp = await fetch("/v1/admin/bulk-submissions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Admin-Key": state.adminKey,
+      },
+      body: JSON.stringify({ repos, llm_provider: provider, llm_api_key: llmKey }),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(`HTTP ${resp.status}: ${text}`);
+    }
+    const data = await resp.json();
+    state.batchId = data.batch_id;
+    showPanel("statusPanel", true);
+    $("batchIdLabel").textContent = data.batch_id;
+    startPolling();
+    await refreshStatus();
+  } catch (e) {
+    setSubmitErr("Submit failed: " + e.message);
+  } finally {
+    $("submitBatch").disabled = false;
+  }
+});
+
+// ── Status polling ─────────────────────────────────────────────────────
+$("refreshStatus").addEventListener("click", refreshStatus);
+
+async function refreshStatus() {
+  if (!state.batchId) return;
+  try {
+    const resp = await fetch(`/v1/admin/bulk-submissions/${state.batchId}`, {
+      headers: { "X-Admin-Key": state.adminKey },
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    renderStatus(data);
+    // Stop polling when all rows are terminal
+    const TERMINAL = new Set(["published", "rejected", "callback_timeout"]);
+    const allDone = data.submissions.every(s => TERMINAL.has(s.status));
+    if (allDone && state.pollTimer) {
+      clearInterval(state.pollTimer);
+      state.pollTimer = null;
+    }
+  } catch (e) {
+    console.error("status refresh failed", e);
+  }
+}
+
+function startPolling() {
+  if (state.pollTimer) clearInterval(state.pollTimer);
+  state.pollTimer = setInterval(refreshStatus, 5000);
+}
+
+function renderStatus(data) {
+  const sum = $("statusSummary");
+  sum.innerHTML = "";
+  const total = data.total;
+  const stats = [["Total", total]];
+  for (const [k, v] of Object.entries(data.by_status)) stats.push([k, v]);
+  for (const [k, v] of stats) {
+    const div = document.createElement("div");
+    div.className = "stat";
+    div.innerHTML = `<b>${v}</b><span class="small muted">${k}</span>`;
+    sum.appendChild(div);
+  }
+
+  const rows = data.submissions.map(s => {
+    const externalLink = s.external_run_url
+      ? `<a href="${s.external_run_url}" target="_blank">view run ↗</a>`
+      : "";
+    const cmd = s.command_name || `<span class="muted">—</span>`;
+    const err = s.error_message ? `<details><summary>error</summary><div class="small">${escapeHtml(s.error_message)}</div></details>` : "";
+    return `
+      <tr>
+        <td><a href="${s.github_repo_url}" target="_blank">${shortRepo(s.github_repo_url)}</a></td>
+        <td>${cmd}</td>
+        <td><span class="status-${s.status}">${s.status}</span></td>
+        <td>${externalLink}</td>
+        <td>${err}</td>
+      </tr>`;
+  }).join("");
+  $("statusTable").innerHTML = `
+    <table>
+      <thead><tr><th>repo</th><th>command</th><th>status</th><th>run</th><th>error</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+function shortRepo(url) {
+  return url.replace(/^https?:\/\/github\.com\//, "");
+}
+
+// ── Boot ────────────────────────────────────────────────────────────────
+const params = new URLSearchParams(location.search);
+const code = params.get("code");
+if (code) {
+  handleGithubCallback(code);
+}
+refreshUserLabel();
+showRepoPanelIfReady();
+</script>
+</body>
+</html>

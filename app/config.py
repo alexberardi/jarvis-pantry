@@ -10,9 +10,14 @@ class Settings(BaseSettings):
     pantry_port: int = Field(7721, alias="PANTRY_PORT")
     database_url: str = Field("postgresql://postgres:postgres@localhost:5432/jarvis_pantry", alias="DATABASE_URL")
 
-    # GitHub OAuth
+    # GitHub OAuth (regular author submission flow)
     github_client_id: str = Field("", alias="GITHUB_CLIENT_ID")
     github_client_secret: str = Field("", alias="GITHUB_CLIENT_SECRET")
+
+    # GitHub OAuth (operator bulk-upload page only — separate app so its
+    # callback URL doesn't collide with the regular submission flow's).
+    operator_github_client_id: str = Field("", alias="PANTRY_OPERATOR_GITHUB_CLIENT_ID")
+    operator_github_client_secret: str = Field("", alias="PANTRY_OPERATOR_GITHUB_CLIENT_SECRET")
 
     # Abuse alerting
     alert_webhook_url: str = Field("", alias="ALERT_WEBHOOK_URL")

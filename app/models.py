@@ -231,3 +231,6 @@ class Submission(Base):
     # Frozen lockfile (`uv pip compile` output) resolved at submission acceptance.
     # The runner installs from this verbatim — no live PyPI resolution at run time.
     resolved_lockfile = Column(Text, nullable=True)
+    # Groups submissions enqueued together by the operator bulk endpoint
+    # (POST /v1/admin/bulk-submissions). Single submissions leave this NULL.
+    batch_id = Column(String(36), nullable=True, index=True)

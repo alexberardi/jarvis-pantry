@@ -16,14 +16,25 @@ from .config import get_settings
 from .db import get_db
 
 
-async def exchange_github_code(code: str) -> dict[str, Any]:
+async def exchange_github_code(
+    code: str,
+    *,
+    client_id: str | None = None,
+    client_secret: str | None = None,
+) -> dict[str, Any]:
     """Exchange a GitHub OAuth code for an access token and user info.
+
+    Defaults to the regular submission-flow credentials when client_id /
+    client_secret aren't passed — the operator bulk page hands in its own
+    pair (loaded from PANTRY_OPERATOR_GITHUB_CLIENT_*).
 
     Returns:
         Dict with keys: access_token, github_id, github_username, display_name, avatar_url
     """
     settings = get_settings()
-    if not settings.github_client_id or not settings.github_client_secret:
+    client_id = client_id or settings.github_client_id
+    client_secret = client_secret or settings.github_client_secret
+    if not client_id or not client_secret:
         raise HTTPException(503, "GitHub OAuth not configured")
 
     async with httpx.AsyncClient() as client:
@@ -31,8 +42,8 @@ async def exchange_github_code(code: str) -> dict[str, Any]:
         token_resp = await client.post(
             "https://github.com/login/oauth/access_token",
             json={
-                "client_id": settings.github_client_id,
-                "client_secret": settings.github_client_secret,
+                "client_id": client_id,
+                "client_secret": client_secret,
                 "code": code,
             },
             headers={"Accept": "application/json"},

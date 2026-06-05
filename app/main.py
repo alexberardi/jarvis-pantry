@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import glob
 import logging
+import os
 import shutil
 import time
 from contextlib import asynccontextmanager
@@ -15,7 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import browse, command_detail, download, forge, forge_drafts, manage, routines, submit, reviews
+from .api import admin_bulk, browse, command_detail, download, forge, forge_drafts, manage, routines, submit, reviews
 from .config import get_settings
 from .services.callback_timeout_watcher import callback_timeout_watcher
 from .services.job_queue import validation_queue
@@ -112,6 +113,31 @@ app.include_router(manage.router, tags=["auth", "management"])
 app.include_router(forge.router, tags=["forge"])
 app.include_router(forge_drafts.router, tags=["forge"])
 app.include_router(routines.router, tags=["routines"])
+app.include_router(admin_bulk.router, tags=["admin", "bulk"])
+
+
+# Operator UI — single-page static asset for bulk uploads. Off by default
+# so self-hosted pantry installs don't expose an unfamiliar admin surface;
+# the operator running the central pantry sets PANTRY_OPERATOR_UI=1 to
+# mount it. The endpoints behind the page (admin_bulk router) are always
+# present but gated by ADMIN_API_KEY — same posture as the existing
+# /v1/admin/commands/* endpoints.
+if os.getenv("PANTRY_OPERATOR_UI") == "1":
+    from pathlib import Path as _Path
+    from fastapi.staticfiles import StaticFiles
+    _operator_dir = _Path(__file__).parent / "static" / "operator"
+    if _operator_dir.is_dir():
+        app.mount(
+            "/operator",
+            StaticFiles(directory=str(_operator_dir), html=True),
+            name="operator",
+        )
+        logger.info("Mounted operator UI at /operator")
+    else:
+        logger.warning(
+            "PANTRY_OPERATOR_UI=1 set but %s not found — operator UI not mounted",
+            _operator_dir,
+        )
 
 
 @app.get("/health")
