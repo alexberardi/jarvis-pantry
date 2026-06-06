@@ -18,7 +18,7 @@ CONFIG_PATH = REPO_ROOT / "config" / "apt-allowlist.yaml"
 EXPECTED_SEED = {
     "mpv", "vlc", "ffmpeg", "alsa-utils", "sox", "mopidy",
     "pulseaudio", "pipewire-pulse", "bluez", "yt-dlp", "imagemagick",
-    "shairport-sync", "raspotify",
+    "shairport-sync", "raspotify", "mpd",
 }
 
 
