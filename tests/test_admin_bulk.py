@@ -64,7 +64,7 @@ def mock_pipeline(monkeypatch, tmp_path, db_session):
     def fake_clone(repo_url, tag=None):
         d = tmp_path / "clones" / repo_url.replace("/", "_").replace(":", "_")
         d.mkdir(parents=True, exist_ok=True)
-        return d
+        return d, "a" * 40
 
     def fake_validate(repo_dir):
         # Mimic the manifest shape consumers downstream rely on.

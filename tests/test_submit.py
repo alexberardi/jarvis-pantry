@@ -13,6 +13,9 @@ from app.models import Author, Command, Submission
 from app.services.github_service import RepoValidationError
 from app.services.static_analysis import StaticAnalysisResult
 
+# clone_repo returns (repo_dir, head_sha); a stable fake SHA for mocks.
+FAKE_SHA = "a" * 40
+
 
 class TestSubmitCommand:
     def test_invalid_provider(self, client, seed_data):
@@ -235,7 +238,7 @@ class TestQuickSubmit:
         settings.rate_limit_disabled = False
 
         repo = _make_fake_repo(tmp_path)
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
 
         resp = client.post("/v1/commands/quick-submit", json={
             "repo_url": "https://github.com/test/jarvis-command-test",
@@ -263,7 +266,7 @@ class TestQuickSubmit:
         settings.rate_limit_disabled = False
 
         repo = _make_fake_repo(tmp_path)
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         mock_queue.enqueue = AsyncMock()
 
         resp = client.post("/v1/commands/quick-submit", json={
@@ -291,7 +294,7 @@ class TestQuickSubmit:
         settings.rate_limit_disabled = False
 
         repo = _make_fake_repo(tmp_path)
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
 
         resp = client.post("/v1/commands/quick-submit", json={
             "repo_url": "https://github.com/test/jarvis-command-test",
@@ -321,7 +324,7 @@ class TestQuickSubmit:
         repo = tmp_path / "repo"
         repo.mkdir(parents=True)
         (repo / "command.py").write_text("# no manifest")
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
 
         resp = client.post("/v1/commands/quick-submit", json={
             "repo_url": "https://github.com/test/repo",
@@ -350,7 +353,7 @@ class TestQuickSubmit:
         (repo / "command.py").write_text("def broken(:\n  pass")  # SyntaxError
         (repo / "README.md").write_text("# Test")
         (repo / "LICENSE").write_text("MIT")
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
 
         resp = client.post("/v1/commands/quick-submit", json={
             "repo_url": "https://github.com/test/bad-command",
@@ -389,7 +392,7 @@ class TestQuickSubmit:
         db_session.commit()
 
         repo = _make_fake_repo(tmp_path)
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         mock_queue.enqueue = AsyncMock()
 
         resp = client.post("/v1/commands/quick-submit", json={
@@ -439,7 +442,7 @@ class TestQuickSubmit:
         )
 
         repo = _make_fake_repo(tmp_path)
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         mock_queue.enqueue = AsyncMock()
 
         # Two requests under cap=2 → both 200.
@@ -485,7 +488,7 @@ class TestQuickSubmit:
         db_session.commit()
 
         repo = _make_fake_repo(tmp_path)
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         mock_queue.enqueue = AsyncMock()
 
         resp = client.post("/v1/commands/quick-submit", json={
@@ -528,7 +531,7 @@ class TestQuickSubmit:
         db_session.commit()
 
         repo = _make_fake_repo(tmp_path)
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         mock_queue.enqueue = AsyncMock()
 
         resp = client.post("/v1/commands/quick-submit", json={
@@ -579,7 +582,7 @@ class TestQuickSubmit:
         db_session.commit()
 
         repo = _make_fake_repo(tmp_path)
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         mock_queue.enqueue = AsyncMock()
 
         resp = client.post("/v1/commands/quick-submit", json={
@@ -618,7 +621,7 @@ class TestQuickSubmit:
         db_session.commit()
 
         repo = _make_fake_repo(tmp_path)
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         mock_queue.enqueue = AsyncMock()
 
         resp = client.post("/v1/commands/quick-submit", json={
@@ -655,7 +658,7 @@ class TestQuickSubmit:
         db_session.commit()
 
         repo = _make_fake_repo(tmp_path)
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
 
         resp = client.post("/v1/commands/quick-submit", json={
             "repo_url": "https://github.com/test/jarvis-command-test",
@@ -697,7 +700,23 @@ class TestContainerResultCallback:
     _SIGNING_KEY = "test-signing-key-32-bytes-of-stuff!!"
     _NONCE = "test-nonce-abc"
 
-    def _seed_awaiting(self, db_session, seed_data, *, nonce=_NONCE):
+    def _seed_awaiting(self, db_session, seed_data, *, nonce=_NONCE, extra_context=None):
+        dispatch_context = {
+            "manifest": {
+                "name": "widget",
+                "display_name": "Widget",
+                "description": "Does widget things",
+                "version": "1.0.0",
+                "categories": ["utility"],
+                "platforms": ["linux"],
+                "license": "MIT",
+                "components": [{"name": "widget", "type": "command", "path": "command.py"}],
+            },
+            "review": None,
+            "author_github": "testuser",
+            "repo_url": "https://github.com/test/jarvis-command-widget",
+        }
+        dispatch_context.update(extra_context or {})
         sub = Submission(
             github_repo_url="https://github.com/test/jarvis-command-widget",
             author_id=seed_data["author"].id,
@@ -705,21 +724,7 @@ class TestContainerResultCallback:
             llm_provider=None,
             callback_nonce=nonce,
             external_run_url="https://github.com/x/y/actions/runs/1",
-            dispatch_context={
-                "manifest": {
-                    "name": "widget",
-                    "display_name": "Widget",
-                    "description": "Does widget things",
-                    "version": "1.0.0",
-                    "categories": ["utility"],
-                    "platforms": ["linux"],
-                    "license": "MIT",
-                    "components": [{"name": "widget", "type": "command", "path": "command.py"}],
-                },
-                "review": None,
-                "author_github": "testuser",
-                "repo_url": "https://github.com/test/jarvis-command-widget",
-            },
+            dispatch_context=dispatch_context,
         )
         db_session.add(sub)
         db_session.commit()
@@ -763,6 +768,36 @@ class TestContainerResultCallback:
         assert updated.status == "published"
         assert updated.callback_nonce is None  # single-use
         assert updated.command_id is not None
+
+    def test_publishes_pinned_version_row(self, client, seed_data, db_session):
+        """The SHA captured at clone time survives the out-of-process round
+        trip (dispatch_context) and lands on the CommandVersion row, and the
+        row's git_tag is never null."""
+        from app.models import CommandVersion
+
+        sub = self._seed_awaiting(
+            db_session, seed_data, extra_context={"git_commit_sha": FAKE_SHA},
+        )
+        with self._with_signing_key():
+            resp = self._post_signed(
+                client, sub.id,
+                {"passed": True, "summary": "2/2 passed", "test_count": 2, "pass_count": 2,
+                 "fail_count": 0, "errors": [], "raw_output": ""},
+            )
+        assert resp.status_code == 200
+
+        db_session.expire_all()
+        widget = db_session.query(Command).filter(
+            Command.command_name == "widget",
+        ).first()
+        assert widget is not None
+        ver = db_session.query(CommandVersion).filter(
+            CommandVersion.command_id == widget.id,
+            CommandVersion.version == "1.0.0",
+        ).first()
+        assert ver is not None
+        assert ver.git_tag == "v1.0.0"
+        assert ver.git_commit_sha == FAKE_SHA
 
     def test_rejects_on_fail(self, client, seed_data, db_session):
         sub = self._seed_awaiting(db_session, seed_data)
@@ -878,7 +913,7 @@ class TestRejectionEnvelopeShape:
         (repo / "command.py").write_text("def broken(:\n  pass")  # SyntaxError
         (repo / "README.md").write_text("# Test")
         (repo / "LICENSE").write_text("MIT")
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
 
         resp = client.post("/v1/commands/quick-submit", json={
             "repo_url": "https://github.com/test/bad-command",
@@ -927,7 +962,7 @@ class TestRejectionEnvelopeShape:
         settings.rate_limit_disabled = False
 
         repo = _make_fake_repo(tmp_path)
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
 
         resp = client.post("/v1/commands/quick-submit", json={
             "repo_url": "https://github.com/test/jarvis-command-test",
@@ -1120,7 +1155,7 @@ class TestLockfileResolution:
         repo = _make_fake_repo_with_packages(
             tmp_path, [{"name": "requests"}, {"name": "pyyaml"}],
         )
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         mock_queue.enqueue = AsyncMock()
         mock_resolve.return_value = _HAPPY_LOCKFILE
 
@@ -1160,7 +1195,7 @@ class TestLockfileResolution:
         settings.rate_limit_disabled = False
 
         repo = _make_fake_repo_with_packages(tmp_path, [])
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         mock_queue.enqueue = AsyncMock()
 
         resp = client.post("/v1/commands/quick-submit", json={
@@ -1192,7 +1227,7 @@ class TestLockfileResolution:
         settings.rate_limit_disabled = False
 
         repo = _make_fake_repo(tmp_path)  # no packages key
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         mock_queue.enqueue = AsyncMock()
 
         resp = client.post("/v1/commands/quick-submit", json={
@@ -1222,7 +1257,7 @@ class TestLockfileResolution:
         settings.rate_limit_disabled = False
 
         repo = _make_fake_repo_with_packages(tmp_path, [{"name": "requests"}])
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
 
         resp = client.post("/v1/commands/quick-submit", json={
             "repo_url": "https://github.com/test/jarvis-command-test",
@@ -1253,7 +1288,7 @@ class TestLockfileResolution:
         settings.rate_limit_disabled = False
 
         repo = _make_fake_repo_with_packages(tmp_path, [{"name": "requests"}])
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         mock_queue.enqueue = AsyncMock()
         mock_resolve.return_value = "a" * LOCKFILE_SIZE_CAP_BYTES
 
@@ -1289,7 +1324,7 @@ class TestLockfileResolution:
         settings.rate_limit_disabled = False
 
         repo = _make_fake_repo_with_packages(tmp_path, [{"name": "requests"}])
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         oversize = "a" * (LOCKFILE_SIZE_CAP_BYTES + 1)
         mock_resolve.side_effect = LockfileTooLargeError(
             f"Resolved lockfile is {len(oversize)} bytes, exceeds {LOCKFILE_SIZE_CAP_BYTES}",
@@ -1326,7 +1361,7 @@ class TestLockfileResolution:
         settings.rate_limit_disabled = False
 
         repo = _make_fake_repo_with_packages(tmp_path, [{"name": "nonexistent-pkg"}])
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         mock_resolve.side_effect = LockfileResolutionError(
             "ERROR: No matching distribution found for nonexistent-pkg",
         )
@@ -1374,7 +1409,7 @@ class TestLockfileResolution:
             {"name": "test_quick", "type": "command", "path": "command.py"},
         ]
         manifest_path.write_text(yaml.dump(manifest))
-        mock_clone.return_value = repo
+        mock_clone.return_value = (repo, FAKE_SHA)
         mock_queue.enqueue = AsyncMock()
         mock_resolve.return_value = _HAPPY_LOCKFILE
 

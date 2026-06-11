@@ -1,5 +1,6 @@
 """Tests for GitHub repository service."""
 
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -8,11 +9,80 @@ import pytest
 import yaml
 
 from app.services.github_service import (
+    clone_repo,
     validate_structure,
     read_command_source,
     cleanup_repo,
     RepoValidationError,
 )
+
+
+class TestCloneRepo:
+    """clone_repo returns (repo_dir, head_sha) — the SHA pins what was validated."""
+
+    _SHA = "0123456789abcdef0123456789abcdef01234567"
+
+    def _result(self, returncode=0, stdout="", stderr=""):
+        return MagicMock(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    @patch("app.services.github_service.subprocess.run")
+    def test_returns_path_and_sha(self, mock_run):
+        mock_run.side_effect = [
+            self._result(),                          # git clone
+            self._result(stdout=f"{self._SHA}\n"),   # git rev-parse HEAD
+        ]
+        repo_dir, sha = clone_repo("https://github.com/test/repo")
+        assert repo_dir.name == "repo"
+        assert sha == self._SHA
+        # rev-parse ran inside the fresh checkout
+        rev_parse_call = mock_run.call_args_list[1]
+        assert rev_parse_call.args[0] == ["git", "rev-parse", "HEAD"]
+        assert rev_parse_call.kwargs["cwd"] == repo_dir
+        cleanup_repo(repo_dir)
+
+    @patch("app.services.github_service.subprocess.run")
+    def test_rev_parse_failure_returns_none_sha(self, mock_run):
+        """A missing SHA (e.g. non-git archive download) never blocks the clone."""
+        mock_run.side_effect = [
+            self._result(),
+            self._result(returncode=128, stderr="fatal: not a git repository"),
+        ]
+        repo_dir, sha = clone_repo("https://github.com/test/repo")
+        assert repo_dir.name == "repo"
+        assert sha is None
+        cleanup_repo(repo_dir)
+
+    @patch("app.services.github_service.subprocess.run")
+    def test_rev_parse_timeout_returns_none_sha(self, mock_run):
+        mock_run.side_effect = [
+            self._result(),
+            subprocess.TimeoutExpired(cmd=["git", "rev-parse", "HEAD"], timeout=10),
+        ]
+        repo_dir, sha = clone_repo("https://github.com/test/repo")
+        assert sha is None
+        cleanup_repo(repo_dir)
+
+    @patch("app.services.github_service.subprocess.run")
+    def test_empty_rev_parse_output_returns_none_sha(self, mock_run):
+        mock_run.side_effect = [self._result(), self._result(stdout="\n")]
+        repo_dir, sha = clone_repo("https://github.com/test/repo")
+        assert sha is None
+        cleanup_repo(repo_dir)
+
+    @patch("app.services.github_service.subprocess.run")
+    def test_clone_failure_raises_without_rev_parse(self, mock_run):
+        mock_run.return_value = self._result(returncode=128, stderr="fatal: not found")
+        with pytest.raises(RepoValidationError, match="git clone failed"):
+            clone_repo("https://github.com/test/missing")
+        assert mock_run.call_count == 1
+
+    @patch("app.services.github_service.subprocess.run")
+    def test_tag_passed_to_clone(self, mock_run):
+        mock_run.side_effect = [self._result(), self._result(stdout=self._SHA)]
+        repo_dir, _sha = clone_repo("https://github.com/test/repo", tag="v1.0.0")
+        clone_cmd = mock_run.call_args_list[0].args[0]
+        assert "--branch" in clone_cmd and "v1.0.0" in clone_cmd
+        cleanup_repo(repo_dir)
 
 
 class TestValidateStructure:

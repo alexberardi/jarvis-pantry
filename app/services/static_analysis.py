@@ -723,6 +723,19 @@ def _validate_manifest_deep(manifest: dict[str, Any], result: StaticAnalysisResu
             value=str(version), message=msg,
         ))
 
+    # min_sdk_version is optional (the pipeline auto-sets it from the
+    # validation SDK when absent) but must be semver when declared — the
+    # node compares it against jarvis_command_sdk.__version__ at install.
+    min_sdk_version = manifest.get("min_sdk_version")
+    if min_sdk_version is not None and not SEMVER_RE.match(str(min_sdk_version)):
+        msg = f"Invalid semver min_sdk_version: {min_sdk_version}"
+        result.errors.append(msg)
+        result.passed = False
+        result.add_finding(make_finding(
+            rc.MANIFEST_BAD_SEMVER, "error",
+            value=str(min_sdk_version), message=msg,
+        ))
+
     # Categories must be valid
     categories = manifest.get("categories", [])
     if isinstance(categories, list):

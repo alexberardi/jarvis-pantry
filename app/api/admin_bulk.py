@@ -243,7 +243,7 @@ async def _process_one(
     repo_dir = None
     try:
         async with _bulk_clone_semaphore:
-            repo_dir = await asyncio.to_thread(clone_repo, repo_url)
+            repo_dir, commit_sha = await asyncio.to_thread(clone_repo, repo_url)
 
         manifest = validate_structure(repo_dir)
         command_name = manifest["name"]
@@ -316,6 +316,7 @@ async def _process_one(
             llm_api_key=llm_api_key,
             author_github=author_github,
             repo_url=repo_url,
+            git_commit_sha=commit_sha,
         )
         await validation_queue.enqueue(job)
 

@@ -411,7 +411,7 @@ async def quick_submit(
     try:
         # 1. Clone (sync, with semaphore)
         async with _clone_semaphore:
-            repo_dir = await asyncio.to_thread(clone_repo, repo_url)
+            repo_dir, commit_sha = await asyncio.to_thread(clone_repo, repo_url)
 
         # 2. Validate structure
         manifest = validate_structure(repo_dir)
@@ -530,6 +530,7 @@ async def quick_submit(
             llm_api_key=body.llm_api_key,
             author_github=author.github_username,
             repo_url=repo_url,
+            git_commit_sha=commit_sha,
         )
         await validation_queue.enqueue(job)
 
@@ -651,6 +652,7 @@ async def container_result_callback(
         author_github=ctx["author_github"],
         repo_url=ctx["repo_url"],
         container_result=container_result,
+        git_commit_sha=ctx.get("git_commit_sha"),
     )
 
     return {"status": submission.status, "submission_id": submission.id}

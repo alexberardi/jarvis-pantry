@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..models import Author, Command, CommandVersion, SecurityReport, Submission
+from .finalize import ensure_min_sdk_version
 from .github_service import (
     clone_repo,
     validate_structure,
@@ -60,7 +61,7 @@ async def process_submission(
         # 1. Clone
         submission.status = "validating"
         db.commit()
-        repo_dir = clone_repo(repo_url)
+        repo_dir, commit_sha = clone_repo(repo_url)
 
         # 2. Validate structure
         manifest = validate_structure(repo_dir)
@@ -143,11 +144,14 @@ async def process_submission(
         db.add(report)
         db.flush()
 
-        # Command version
+        # Command version — validation passed; pin the SDK floor before the
+        # manifest is written so manifest_json carries it.
+        ensure_min_sdk_version(manifest)
         cmd_version = CommandVersion(
             command_id=command.id,
             version=version,
             git_tag=f"v{version}",
+            git_commit_sha=commit_sha,
             manifest_json=manifest,
             danger_rating=review.danger_score,
             security_report_id=report.id,

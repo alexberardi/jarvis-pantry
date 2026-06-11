@@ -17,7 +17,7 @@ class RepoValidationError(Exception):
     """Error validating a command repository."""
 
 
-def clone_repo(repo_url: str, tag: str | None = None) -> Path:
+def clone_repo(repo_url: str, tag: str | None = None) -> tuple[Path, str | None]:
     """Shallow clone a GitHub repo.
 
     Args:
@@ -25,7 +25,10 @@ def clone_repo(repo_url: str, tag: str | None = None) -> Path:
         tag: Optional git tag to checkout.
 
     Returns:
-        Path to the cloned repo directory.
+        Tuple of (path to the cloned repo directory, HEAD commit SHA).
+        The SHA pins exactly what was validated; it is None when it can't
+        be resolved (e.g. a non-git archive download) — a missing SHA
+        never blocks a submission.
     """
     tmpdir = Path(tempfile.mkdtemp(prefix="jarvis-store-"))
     cmd = ["git", "clone", "--depth", "1"]
@@ -38,7 +41,23 @@ def clone_repo(repo_url: str, tag: str | None = None) -> Path:
         shutil.rmtree(tmpdir, ignore_errors=True)
         raise RepoValidationError(f"git clone failed: {result.stderr.strip()}")
 
-    return tmpdir / "repo"
+    repo_dir = tmpdir / "repo"
+
+    commit_sha: str | None = None
+    try:
+        sha_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if sha_result.returncode == 0:
+            commit_sha = sha_result.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        commit_sha = None
+
+    return repo_dir, commit_sha
 
 
 def _find_manifest_path(repo_dir: Path) -> Path:

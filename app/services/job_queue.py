@@ -38,6 +38,7 @@ class SubmissionJob:
     llm_api_key: str
     author_github: str
     repo_url: str = ""
+    git_commit_sha: str | None = None
 
     def zero_key(self) -> None:
         """Zero out the API key after use."""
@@ -178,6 +179,7 @@ class ValidationQueue:
                     review=review,
                     author_github=job.author_github,
                     repo_url=job.repo_url,
+                    git_commit_sha=job.git_commit_sha,
                 )
                 submission.awaiting_container_since = datetime.now(timezone.utc)
                 submission.dispatch_attempts = (submission.dispatch_attempts or 0) + 1
@@ -198,6 +200,7 @@ class ValidationQueue:
                 author_github=job.author_github,
                 repo_url=job.repo_url,
                 container_result=dispatch.result,
+                git_commit_sha=job.git_commit_sha,
             )
 
         except Exception as e:

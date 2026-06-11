@@ -6,18 +6,82 @@ Both the in-process worker (LocalRunner) and the async callback endpoint
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import logging
+import sys
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..models import Author, Command, CommandVersion, SecurityReport, Submission
 from .container_test import ContainerTestResult
 from .security_review import SecurityReviewResult
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_sdk_version() -> str | None:
+    """Version of the jarvis_command_sdk this Pantry validates against.
+
+    Tries a direct import from the settings.sdk_path checkout first (the
+    same tree the local container-test base image is built from), then
+    falls back to the pip-installed package (the Fly image installs the
+    SDK without keeping a checkout). Returns None when neither is
+    loadable — callers must leave the manifest untouched.
+    """
+    sdk_path = Path(get_settings().sdk_path)
+    pkg_dir = sdk_path / "jarvis_command_sdk"
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "jarvis_command_sdk",
+            pkg_dir / "__init__.py",
+            submodule_search_locations=[str(pkg_dir)],
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"no importable jarvis_command_sdk at {pkg_dir}")
+        module = importlib.util.module_from_spec(spec)
+        # Register under the real name so the SDK's relative imports
+        # resolve, then restore — this probe must not shadow a
+        # pip-installed SDK for the rest of the process.
+        previous = sys.modules.get("jarvis_command_sdk")
+        sys.modules["jarvis_command_sdk"] = module
+        try:
+            spec.loader.exec_module(module)
+            return str(module.__version__)
+        finally:
+            if previous is not None:
+                sys.modules["jarvis_command_sdk"] = previous
+            else:
+                sys.modules.pop("jarvis_command_sdk", None)
+    except Exception as checkout_err:
+        try:
+            return str(importlib.import_module("jarvis_command_sdk").__version__)
+        except Exception as installed_err:
+            logger.warning(
+                "Could not resolve SDK version (checkout %s: %s; installed: %s) — "
+                "min_sdk_version left to the author's manifest",
+                sdk_path, checkout_err, installed_err,
+            )
+            return None
+
+
+def ensure_min_sdk_version(manifest: dict[str, Any]) -> None:
+    """Auto-set min_sdk_version to the validation SDK's version.
+
+    Authors who declare their own floor keep it. When the SDK version
+    can't be resolved the field is left absent (nodes treat absent as
+    "always passes") rather than blocking the publish.
+    """
+    if manifest.get("min_sdk_version"):
+        return
+    sdk_version = resolve_sdk_version()
+    if sdk_version:
+        manifest["min_sdk_version"] = sdk_version
 
 
 _SKIP_SUMMARIES = {"SKIP - Docker not available", "SKIP - SDK not available"}
@@ -49,6 +113,7 @@ def build_dispatch_context(
     review: SecurityReviewResult | None,
     author_github: str,
     repo_url: str,
+    git_commit_sha: str | None = None,
 ) -> dict[str, Any]:
     """Serialize everything the finalize step needs when the container test
     runs out-of-process (e.g. GitHub Actions) and finalization happens later
@@ -58,6 +123,7 @@ def build_dispatch_context(
         "review": _review_to_json(review),
         "author_github": author_github,
         "repo_url": repo_url,
+        "git_commit_sha": git_commit_sha,
     }
 
 
@@ -70,6 +136,7 @@ def finalize_submission(
     author_github: str,
     repo_url: str,
     container_result: ContainerTestResult,
+    git_commit_sha: str | None = None,
 ) -> None:
     """Apply the container-test outcome: either publish or reject."""
 
@@ -87,7 +154,10 @@ def finalize_submission(
         logger.info("Submission %d rejected: %s", submission.id, error_detail)
         return
 
-    # Publish path
+    # Publish path — validation passed; pin the SDK floor before any rows
+    # are written so manifest_json carries it.
+    ensure_min_sdk_version(manifest)
+
     command_name = manifest["name"]
     version = manifest.get("version", "0.1.0")
     components = manifest.get("components", [])
@@ -165,7 +235,8 @@ def finalize_submission(
         db.add(CommandVersion(
             command_id=command.id,
             version=version,
-            git_tag=None,
+            git_tag=f"v{version}",
+            git_commit_sha=git_commit_sha,
             manifest_json=manifest,
             danger_rating=danger_rating,
             security_report_id=report_id,

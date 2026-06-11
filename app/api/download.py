@@ -57,8 +57,12 @@ def download_command(
         "command_name": cmd.command_name,
         "github_repo_url": cmd.github_repo_url,
         "version": ver.version,
-        "git_tag": ver.git_tag,
+        # Pin to what was validated: tag first, validated commit SHA as
+        # fallback. Old rows with both null stay null (grandfathered
+        # floating-main until resubmitted).
+        "git_tag": ver.git_tag or ver.git_commit_sha,
         "manifest": ver.manifest_json,
+        "min_sdk_version": (ver.manifest_json or {}).get("min_sdk_version"),
         "danger_rating": ver.danger_rating,
         "verified": cmd.verified,
     }

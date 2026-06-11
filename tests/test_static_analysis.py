@@ -236,6 +236,37 @@ class TestManifestValidation:
         assert result.passed is False
         assert any("semver" in e for e in result.errors)
 
+    def test_min_sdk_version_valid_semver_passes(self, tmp_path):
+        manifest = {"name": "test", "description": "test", "version": "1.0.0", "min_sdk_version": "0.3.3"}
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is True
+        assert not any("min_sdk_version" in e for e in result.errors)
+
+    def test_min_sdk_version_absent_passes(self, tmp_path):
+        """Optional field — the pipeline auto-sets it when absent."""
+        manifest = {"name": "test", "description": "test", "version": "1.0.0"}
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is True
+        assert not any("min_sdk_version" in e for e in result.errors)
+
+    def test_min_sdk_version_invalid_semver_errors(self, tmp_path):
+        manifest = {"name": "test", "description": "test", "version": "1.0.0", "min_sdk_version": "latest"}
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("min_sdk_version" in e for e in result.errors)
+        findings = [f for f in result.findings if f.reason_code == "manifest_bad_semver"]
+        assert any(f.value == "latest" for f in findings)
+
+    def test_min_sdk_version_partial_semver_errors(self, tmp_path):
+        manifest = {"name": "test", "description": "test", "version": "1.0.0", "min_sdk_version": "0.3"}
+        repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("min_sdk_version" in e for e in result.errors)
+
     def test_unknown_category_warns(self, tmp_path):
         manifest = {"name": "test", "description": "test", "version": "1.0.0", "categories": ["bogus"]}
         repo = _make_repo(tmp_path, VALID_COMMAND, manifest)
