@@ -13,8 +13,6 @@ import json
 import logging
 from dataclasses import dataclass
 
-from jarvis_command_sdk.forge import generate_spec_markdown
-
 from .llm_client import (
     LLM_MODELS,
     call_claude,
@@ -61,6 +59,11 @@ class ForgeResult:
 
 def _build_system_prompt() -> str:
     """Build the Forge system prompt from the SDK spec."""
+    # Imported lazily: the SDK is only needed to actually generate a package
+    # (it's installed in the deployed image), so the module stays importable
+    # for validation/tests without jarvis_command_sdk present.
+    from jarvis_command_sdk.forge import generate_spec_markdown
+
     spec_md = generate_spec_markdown()
     return f"""\
 You are the Jarvis Forge — an AI that generates complete, working Jarvis \
@@ -287,9 +290,20 @@ def _validate_generated_files(files: list[GeneratedFile]) -> ForgeValidation:
 
     # Write files to a temp dir so static analysis can run
     tmpdir = Path(tempfile.mkdtemp(prefix="forge-validate-"))
+    tmpdir_resolved = tmpdir.resolve()
     try:
         for f in files:
-            filepath = tmpdir / f.filename
+            filepath = (tmpdir / f.filename).resolve()
+            # The filename is chosen by the (untrusted) LLM. Reject absolute
+            # paths and ".." traversal that would escape the temp dir — an
+            # unsanitized join here is an arbitrary-file-write on the host.
+            try:
+                filepath.relative_to(tmpdir_resolved)
+            except ValueError:
+                msg = f"unsafe filename rejected: {f.filename!r}"
+                errors.append(msg)
+                dangerous.append(msg)
+                continue
             filepath.parent.mkdir(parents=True, exist_ok=True)
             filepath.write_text(f.content, encoding="utf-8")
 
