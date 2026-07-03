@@ -1,9 +1,11 @@
 """Tests for the download endpoint's install pinning.
 
-`git_tag` in the response must pin the node to what Pantry validated:
-the stored tag first, the validated commit SHA as fallback. Old rows with
-both null are grandfathered (floating main) until resubmitted. The
-response also surfaces the manifest's `min_sdk_version` floor.
+`git_tag` in the response must pin the node to what Pantry validated: the
+IMMUTABLE commit SHA first (a tag can be force-repointed to un-reviewed code
+after validation — the validate-then-repoint TOCTOU), the stored tag only as a
+fallback for rows with no recorded SHA. Old rows with both null are
+grandfathered (floating main) until resubmitted. The response also surfaces the
+manifest's `min_sdk_version` floor.
 """
 
 from app.models import CommandVersion
@@ -52,7 +54,9 @@ class TestDownloadPinning:
         assert resp.status_code == 200
         assert resp.json()["git_tag"] is None
 
-    def test_tag_wins_over_sha(self, client, seed_data, db_session):
+    def test_immutable_sha_pins_over_mutable_tag(self, client, seed_data, db_session):
+        """The validate-then-repoint TOCTOU fix: when both are present the fetch
+        ref is the immutable SHA, not the tag a malicious author could move."""
         ver = CommandVersion(
             command_id=1,
             version="1.2.0",
@@ -67,7 +71,11 @@ class TestDownloadPinning:
 
         resp = client.get("/v1/commands/get_stock_price/download?version=1.2.0")
         assert resp.status_code == 200
-        assert resp.json()["git_tag"] == "v1.2.0"
+        body = resp.json()
+        # Fetch ref pins to the reviewed commit; the tag is never the ref here.
+        assert body["git_tag"] == FAKE_SHA
+        # The SHA is also surfaced explicitly for clients that verify HEAD.
+        assert body["git_commit_sha"] == FAKE_SHA
 
 
 class TestDownloadMinSdkVersion:
