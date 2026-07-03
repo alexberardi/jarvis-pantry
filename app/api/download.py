@@ -57,10 +57,17 @@ def download_command(
         "command_name": cmd.command_name,
         "github_repo_url": cmd.github_repo_url,
         "version": ver.version,
-        # Pin to what was validated: tag first, validated commit SHA as
-        # fallback. Old rows with both null stay null (grandfathered
-        # floating-main until resubmitted).
-        "git_tag": ver.git_tag or ver.git_commit_sha,
+        # Pin the node's fetch to the IMMUTABLE commit SHA validated at publish
+        # time, not the mutable tag. A tag can be force-repointed to un-reviewed
+        # code AFTER validation passes (validate-then-repoint TOCTOU); the commit
+        # SHA can't be forged. GitHub archive URLs (the node's primary fetch
+        # path) accept a full SHA, so the node downloads exactly what Pantry
+        # reviewed. The node records manifest.version for display, so pinning by
+        # SHA doesn't muddy version tracking. Falls back to the tag only for
+        # grandfathered rows with no recorded SHA; rows with both null stay null
+        # (floating main until resubmitted).
+        "git_tag": ver.git_commit_sha or ver.git_tag,
+        "git_commit_sha": ver.git_commit_sha,
         "manifest": ver.manifest_json,
         "min_sdk_version": (ver.manifest_json or {}).get("min_sdk_version"),
         "danger_rating": ver.danger_rating,
