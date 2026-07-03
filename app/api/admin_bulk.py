@@ -18,6 +18,7 @@ both target these endpoints.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -65,7 +66,7 @@ _OPERATOR_GITHUB_USERNAME = "pantry-operator"
 def _require_admin_key(x_admin_key: str) -> None:
     settings = get_settings()
     expected = getattr(settings, "admin_api_key", "")
-    if not expected or x_admin_key != expected:
+    if not expected or not hmac.compare_digest(x_admin_key, expected):
         raise HTTPException(403, "Invalid admin key")
 
 

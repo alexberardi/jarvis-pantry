@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hmac
+
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -108,7 +110,7 @@ def verify_command(
     from ..config import get_settings
     settings = get_settings()
     expected_key = getattr(settings, "admin_api_key", "")
-    if not expected_key or x_admin_key != expected_key:
+    if not expected_key or not hmac.compare_digest(x_admin_key, expected_key):
         raise HTTPException(403, "Invalid admin key")
 
     cmd = db.query(Command).filter(Command.command_name == command_name).first()
@@ -131,7 +133,7 @@ def unpublish_command(
     from ..config import get_settings
     settings = get_settings()
     expected_key = getattr(settings, "admin_api_key", "")
-    if not expected_key or x_admin_key != expected_key:
+    if not expected_key or not hmac.compare_digest(x_admin_key, expected_key):
         raise HTTPException(403, "Invalid admin key")
 
     cmd = db.query(Command).filter(Command.command_name == command_name).first()
