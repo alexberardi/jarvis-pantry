@@ -134,6 +134,28 @@ class TestLiveCap:
         from app.api import submit as submit_mod
         assert submit_mod._submit_limiter._cap_source is not None
 
+    def test_forge_generate_cap_helper_returns_current_settings_value(self, monkeypatch):
+        from app import rate_limiter as rl_mod
+        import app.config as config_mod
+
+        monkeypatch.setattr(
+            config_mod,
+            "get_settings",
+            lambda: SimpleNamespace(forge_generate_rate_limit_per_hour=3),
+        )
+        assert rl_mod._forge_generate_cap_per_hour() == 3
+
+        monkeypatch.setattr(
+            config_mod,
+            "get_settings",
+            lambda: SimpleNamespace(forge_generate_rate_limit_per_hour=8),
+        )
+        assert rl_mod._forge_generate_cap_per_hour() == 8
+
+    def test_generate_limiter_wired_with_cap_source(self):
+        from app.api import forge as forge_mod
+        assert forge_mod._generate_limiter._cap_source is not None
+
     # ── _is_disabled() short-circuit must still fire first ──
 
     def test_disabled_short_circuit_bypasses_cap_source(self, monkeypatch):

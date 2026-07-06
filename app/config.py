@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     submission_rate_limit_per_user_per_hour: int = Field(
         15, alias="SUBMISSION_RATE_LIMIT_PER_USER_PER_HOUR",
     )
+    forge_generate_rate_limit_per_hour: int = Field(
+        5, alias="FORGE_GENERATE_RATE_LIMIT_PER_HOUR",
+    )
 
     # Validation pipeline
     max_concurrent_container_tests: int = Field(3, alias="MAX_CONCURRENT_CONTAINER_TESTS")

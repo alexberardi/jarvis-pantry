@@ -23,6 +23,13 @@ def _submission_cap_per_hour() -> int:
     return get_settings().submission_rate_limit_per_hour
 
 
+def _forge_generate_cap_per_hour() -> int:
+    """Live-read of the per-hour forge-generate cap. Same re-read semantics as
+    `_submission_cap_per_hour`."""
+    from app.config import get_settings
+    return get_settings().forge_generate_rate_limit_per_hour
+
+
 @dataclass
 class RateBucket:
     """Sliding-window counter for rate limiting."""
