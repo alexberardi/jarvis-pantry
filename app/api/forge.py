@@ -13,11 +13,20 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
+
+from ..rate_limiter import RateLimiter, _forge_generate_cap_per_hour
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# Rate limiter for forge generation: per-IP cap from
+# FORGE_GENERATE_RATE_LIMIT_PER_HOUR. Uses cap_source so the cap is re-read on
+# each request — runtime tuning of the setting (after a
+# get_settings.cache_clear() or fresh process start with a different env var)
+# takes effect without re-importing this module.
+_generate_limiter = RateLimiter(cap_source=_forge_generate_cap_per_hour)
 
 
 class ForgeGenerateRequest(BaseModel):
@@ -55,12 +64,17 @@ def get_forge_spec(format: str = Query("json", enum=["json", "markdown"])):
 
 
 @router.post("/v1/forge/generate")
-async def generate_package(body: ForgeGenerateRequest):
+async def generate_package(body: ForgeGenerateRequest, request: Request):
     """Generate a Jarvis package from a natural language description.
 
     BYOK — the user provides their own LLM API key. Used once, never stored.
+    Rate-limited by client IP.
     """
     from ..config import get_settings
+
+    client_ip = request.client.host if request.client else "unknown"
+    if not _generate_limiter.check(f"forge-generate:{client_ip}"):
+        raise HTTPException(429, "Rate limit exceeded. Try again later.")
 
     if not body.description.strip():
         raise HTTPException(400, "Description is required")
