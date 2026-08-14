@@ -6,13 +6,16 @@ Public catalog endpoints (browse, detail, download) require no auth.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from fastapi import Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from .config import get_settings
+
+if TYPE_CHECKING:
+    from .models import Author
 from .db import get_db
 
 
