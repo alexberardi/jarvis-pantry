@@ -7,6 +7,14 @@ import hmac
 from fastapi import HTTPException
 
 
+def is_admin_key(provided: str | None) -> bool:
+    """True when ``ADMIN_API_KEY`` is configured and ``provided`` matches it (constant time)."""
+    from ..config import get_settings
+
+    expected = getattr(get_settings(), "admin_api_key", "") or ""
+    return bool(expected) and hmac.compare_digest((provided or "").encode("utf-8"), expected.encode("utf-8"))
+
+
 def require_admin_key(provided: str | None, purpose: str) -> None:
     """Refuse unless ``ADMIN_API_KEY`` is configured and ``provided`` matches it.
 

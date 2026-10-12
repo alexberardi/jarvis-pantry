@@ -47,8 +47,10 @@ deployment that sets none of them runs exactly as before.
 
 - A node installs a package by cloning its GitHub repository. The Pantry only **brokers the lookup** (name, versions,
   repository URL, commit); it never hosts the package contents.
-- Your own packages live in the same tables as public submissions, under a reserved author `local`
-  (`Local (private)`). That is how the list and detail routes can tell them apart (`"source": "local"`).
+- Your own packages live in the same tables as public submissions, under one reserved author row marked `is_local`
+  (`Local (private)`, stored username `_local`, which no GitHub login can have, and never matched by the login path).
+  That is how the list and detail routes tell them apart: every item carries `"source"`, `"local"` for a package added
+  from a repository, `"pantry"` for one published through this Pantry's pipeline (migration `j7f1a3b5c8d9`).
 - Settings that change at runtime (the local LLM server) live in one table, `app_settings` (migration
   `i6e0f2a4b7c8`), so they survive restarts and can be edited from the web interface. Environment variables are only the
   first-run fallback.
@@ -102,7 +104,7 @@ Open <http://localhost:7720>, go to **Settings**, enter the server's address (an
 | Method | Path | Admin key | Purpose |
 |---|---|---|---|
 | `GET` | `/v1/forge/features` | no | Which optional features are on |
-| `GET` | `/v1/forge/local-llm` | no | `{base_url, has_api_key, default_model, source}`. The key itself is never returned. |
+| `GET` | `/v1/forge/local-llm` | to see the address | `{base_url, has_api_key, default_model, source}`. The key itself is never returned, and `base_url` is an empty string unless the request carries the admin key. |
 | `PUT` | `/v1/forge/local-llm` | when set | Save `{base_url, api_key, default_model}`. `api_key` omitted keeps the stored key; `""` clears it. |
 | `POST` | `/v1/forge/local-llm/detect` | when set | Test the supplied address and key, or the saved ones, and return `{ok, models, error}` |
 | `GET` | `/v1/forge/models` | no | The Forge's model list, local models first |
@@ -118,7 +120,7 @@ catalogue **and** its own packages as one store, so nodes need only this address
 as upstream does.
 
 - `GET /v1/commands` merges both: your packages first, then the public ones; a local name **shadows** a public one. Each
-  item has `"source": "local" | "upstream"`. Search, category and type filters, sorting and pagination apply to the merged
+  item has `"source": "local" | "pantry" | "upstream"`. Search, category and type filters, sorting and pagination apply to the merged
   list, and `/v1/categories` counts both.
 - `GET /v1/commands/{name}`, `/versions` and `/download` answer locally first and fall back to the public Pantry.
 - The public list is fetched whole (it is small) and filtered here, so both sources behave the same. It is cached for

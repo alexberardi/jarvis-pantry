@@ -23,7 +23,7 @@ from ..services.github_service import RepoValidationError, clone_repo, validate_
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-LOCAL_AUTHOR = "local"
+LOCAL_AUTHOR = "_local"  # stored username of the local author; GitHub logins cannot start with an underscore
 
 
 class AddFromRepoRequest(BaseModel):
@@ -79,14 +79,14 @@ def add_from_repo(
     ) or (len(components) == 1 and "/" in components[0].get("path", ""))
     package_type = "bundle" if is_bundle else "command"
 
-    author = db.query(Author).filter(Author.github_username == LOCAL_AUTHOR).first()
+    author = db.query(Author).filter(Author.is_local.is_(True)).first()
     if not author:
-        author = Author(github_id=-1, github_username=LOCAL_AUTHOR, display_name="Local (private)")
+        author = Author(github_id=-1, github_username=LOCAL_AUTHOR, display_name="Local (private)", is_local=True)
         db.add(author)
         db.flush()
 
     command = db.query(Command).filter(Command.command_name == name).first()
-    if command is not None and (not command.author or command.author.github_username != LOCAL_AUTHOR):
+    if command is not None and not (command.author and command.author.is_local):
         # Never repoint a package that came through the public submission pipeline at a repository added here:
         # it would silently replace reviewed code (and keep its author, verified badge and install count).
         raise HTTPException(
@@ -141,7 +141,7 @@ def remove_local_command(
     """Unpublish a package that was added from a repository (it is hidden, not deleted)."""
     _require_admin(x_admin_key)
     command = db.query(Command).filter(Command.command_name == command_name).first()
-    if command is None or not command.author or command.author.github_username != LOCAL_AUTHOR:
+    if command is None or not (command.author and command.author.is_local):
         raise HTTPException(404, f"No local package '{command_name}'")
     command.published = False
     db.commit()

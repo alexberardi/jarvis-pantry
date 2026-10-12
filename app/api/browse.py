@@ -24,7 +24,8 @@ def list_commands(
     """Browse/search published commands.
 
     With PANTRY_UPSTREAM_URL set, the upstream catalogue is merged in: this Pantry's own packages come first and win
-    on a name clash, and every item carries ``"source": "local" | "upstream"``.
+    on a name clash. Every item carries ``"source"``: ``"local"`` (added by the administrator from a repository),
+    ``"pantry"`` (published through this Pantry) or ``"upstream"`` (mirrored from the public Pantry).
     """
     if upstream.is_enabled():
         return _merged_listing(db, q, category, type, sort, page, per_page)
@@ -64,20 +65,7 @@ def list_commands(
 
     return {
         "commands": [
-            {
-                "command_name": cmd.command_name,
-                "display_name": cmd.display_name,
-                "description": cmd.description,
-                "author": cmd.author.github_username if cmd.author else None,
-                "latest_version": cmd.latest_version,
-                "categories": cmd.categories or [],
-                "install_count": cmd.install_count,
-                "danger_rating": cmd.danger_rating,
-                "verified": cmd.verified,
-                "icon_url": cmd.icon_url,
-                "package_type": cmd.package_type or "command",
-                "components": cmd.components or [],
-            }
+            _summary(cmd)
             for cmd in commands
         ],
         "total": total,
@@ -87,11 +75,12 @@ def list_commands(
 
 
 def _summary(cmd: Command) -> dict:
+    is_local = bool(cmd.author and cmd.author.is_local)
     return {
         "command_name": cmd.command_name,
         "display_name": cmd.display_name,
         "description": cmd.description,
-        "author": cmd.author.github_username if cmd.author else None,
+        "author": ("local" if is_local else cmd.author.github_username) if cmd.author else None,
         "latest_version": cmd.latest_version,
         "categories": cmd.categories or [],
         "install_count": cmd.install_count,
@@ -100,7 +89,9 @@ def _summary(cmd: Command) -> dict:
         "icon_url": cmd.icon_url,
         "package_type": cmd.package_type or "command",
         "components": cmd.components or [],
-        "source": "local",
+        # "local": added by the administrator from a repository (private, unreviewed); "pantry": published through
+        # this Pantry's own pipeline; "upstream": mirrored from the public Pantry.
+        "source": "local" if is_local else "pantry",
         "created_at": cmd.created_at.isoformat() if cmd.created_at else None,
     }
 

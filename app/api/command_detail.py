@@ -57,7 +57,7 @@ def get_command(command_name: str, db: Session = Depends(get_db)):
         "description": cmd.description,
         "github_repo_url": cmd.github_repo_url,
         "author": {
-            "github": cmd.author.github_username,
+            "github": "local" if cmd.author.is_local else cmd.author.github_username,
             "display_name": cmd.author.display_name,
             "avatar_url": cmd.author.avatar_url,
         } if cmd.author else None,
@@ -77,7 +77,7 @@ def get_command(command_name: str, db: Session = Depends(get_db)):
         "security_report": security_report,
         "review_count": len(reviews),
         "avg_rating": round(avg_rating, 1) if avg_rating else None,
-        **({"source": "local"} if upstream.is_enabled() else {}),
+        "source": "local" if cmd.author and cmd.author.is_local else "pantry",
     }
 
 

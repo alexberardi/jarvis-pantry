@@ -260,7 +260,7 @@ async def generate_package(
 
     if model.provider == "local":
         raw = await call_local(
-            system_prompt, messages, llm_api_key or local_config.api_key,
+            system_prompt, messages, local_config.api_key,  # never the caller's key: it may be a hosted provider's
             model.api_model, model.max_tokens, local_config.base_url,
         )
     elif model.provider == "anthropic":

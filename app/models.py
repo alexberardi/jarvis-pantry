@@ -13,7 +13,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy import TypeDecorator
+from sqlalchemy import TypeDecorator, text
 import json as _json
 
 
@@ -94,6 +94,9 @@ class Author(Base):
     display_name = Column(String(255))
     avatar_url = Column(String(512))
     suspended = Column(Boolean, default=False)
+    # The one row that owns packages added by the administrator from a repository. It is not a GitHub account and
+    # no login can reach it (its username starts with '_', which GitHub logins cannot).
+    is_local = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     created_at = Column(DateTime(timezone=True), default=_utcnow)
 
     commands = relationship("Command", back_populates="author")

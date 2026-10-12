@@ -164,11 +164,38 @@ def test_models_list_without_local_server_is_unchanged(client):
 def test_env_fallback(client, monkeypatch):
     monkeypatch.setenv("FORGE_LOCAL_BASE_URL", "http://env-srv:8080/")
     monkeypatch.setenv("FORGE_LOCAL_MODEL", "env-model")
-    r = client.get("/v1/forge/local-llm").json()
+    r = client.get("/v1/forge/local-llm", headers=ADMIN).json()
     assert r["base_url"] == "http://env-srv:8080" and r["default_model"] == "env-model" and r["source"] == "environment"
 
 
+def test_server_address_is_only_shown_with_the_admin_key(client, monkeypatch):
+    monkeypatch.setenv("FORGE_LOCAL_BASE_URL", "http://internal-srv:8080")
+    anonymous = client.get("/v1/forge/local-llm").json()
+    assert anonymous["base_url"] == "" and "internal-srv" not in str(anonymous)
+    wrong = client.get("/v1/forge/local-llm", headers={"X-Admin-Key": "nope"}).json()
+    assert wrong["base_url"] == ""
+    assert client.get("/v1/forge/local-llm", headers=ADMIN).json()["base_url"] == "http://internal-srv:8080"
+
+
+def test_a_key_supplied_by_the_caller_never_reaches_the_local_server(client, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _fake_get(["qwen-9b"]))
+    client.put("/v1/forge/local-llm", json={"base_url": "http://srv:8080", "api_key": "srvkey"}, headers=ADMIN)
+    seen = {}
+
+    async def fake_call_local(system_prompt, messages, api_key, model, max_tokens, base_url):
+        seen["api_key"] = api_key
+        return '{"package_name": "x", "display_name": "X", "explanation": "ok", "files": []}'
+
+    from app.services import forge_generator
+    monkeypatch.setattr(forge_generator, "call_local", fake_call_local)
+    r = client.post("/v1/forge/generate",
+                    json={"description": "do a thing", "model": "local:qwen-9b", "llm_api_key": "sk-hosted-provider"})
+    assert r.status_code == 200, r.text
+    assert seen["api_key"] == "srvkey"
+
+
 def test_generate_uses_selected_local_model_without_key(client, monkeypatch):
+    pytest.importorskip("jarvis_command_sdk")  # the validator behind /generate needs the SDK, which is not in the dev extras
     monkeypatch.setattr(httpx, "get", _fake_get(["qwen-9b"]))
     client.put("/v1/forge/local-llm", json={"base_url": "http://srv:8080", "api_key": "srvkey"}, headers=ADMIN)
     captured = {}

@@ -9,6 +9,7 @@ the Pantry only brokers the lookup.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any
@@ -38,6 +39,9 @@ def is_enabled() -> bool:
     return bool(base_url())
 
 
+_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+
+
 def _ttl() -> float:
     from ..config import get_settings
     return float(getattr(get_settings(), "pantry_upstream_ttl_seconds", 300))
@@ -55,15 +59,23 @@ def clear_cache() -> None:
 
 def _get_json(path: str, params: dict[str, Any] | None = None) -> tuple[int, Any]:
     url = f"{base_url()}{path}"
+    # Redirects are not followed (the configured URL is the one the administrator trusts) and the reply is capped,
+    # so a hostile or misconfigured upstream cannot redirect the Pantry elsewhere or exhaust its memory.
     try:
-        resp = httpx.get(url, params=params, timeout=_timeout(), follow_redirects=True)
+        with httpx.stream("GET", url, params=params, timeout=_timeout(), follow_redirects=False) as resp:
+            status = resp.status_code
+            data = bytearray()
+            for chunk in resp.iter_bytes():
+                data.extend(chunk)
+                if len(data) > _MAX_RESPONSE_BYTES:
+                    raise UpstreamError("The upstream Pantry's reply was larger than the allowed size")
     except httpx.HTTPError as e:
         raise UpstreamError(f"Could not reach the upstream Pantry: {e}") from e
     try:
-        body = resp.json()
+        body = json.loads(bytes(data))
     except ValueError:
         body = None
-    return resp.status_code, body
+    return status, body
 
 
 def list_commands() -> list[dict[str, Any]]:

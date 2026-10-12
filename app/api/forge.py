@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from .admin_key import require_admin_key
+from .admin_key import is_admin_key, require_admin_key
 from ..services import local_llm
 
 from ..rate_limiter import RateLimiter, _forge_generate_cap_per_hour
@@ -96,9 +96,9 @@ class LocalLLMDetectRequest(BaseModel):
     api_key: str | None = None
 
 
-def _settings_view(cfg: local_llm.LocalLLMConfig) -> dict[str, Any]:
+def _settings_view(cfg: local_llm.LocalLLMConfig, show_url: bool = True) -> dict[str, Any]:
     return {
-        "base_url": cfg.base_url,
+        "base_url": cfg.base_url if show_url else "",
         "has_api_key": bool(cfg.api_key),
         "default_model": cfg.default_model,
         "source": cfg.source,
@@ -106,10 +106,16 @@ def _settings_view(cfg: local_llm.LocalLLMConfig) -> dict[str, Any]:
 
 
 @router.get("/v1/forge/local-llm")
-def get_local_llm_settings(db: Session = Depends(get_db)):
-    """Current local server settings. The API key is never returned, only whether one is set."""
+def get_local_llm_settings(
+    x_admin_key: str | None = Header(None, alias="X-Admin-Key"),
+    db: Session = Depends(get_db),
+):
+    """Current local server settings. The API key is never returned, only whether one is set.
+
+    The server address is internal, so it is only included for a caller that sends the admin key.
+    """
     _require_enabled()
-    return _settings_view(local_llm.get_config(db))
+    return _settings_view(local_llm.get_config(db), show_url=is_admin_key(x_admin_key))
 
 
 @router.put("/v1/forge/local-llm")

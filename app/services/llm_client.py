@@ -290,5 +290,8 @@ async def call_local(
         # The body is not returned: it can carry whatever the server wants to say, including echoed credentials.
         raise RuntimeError(f"Local LLM server answered HTTP {resp.status_code}")
 
-    text = resp.json()["choices"][0]["message"]["content"] or ""
+    try:
+        text = resp.json()["choices"][0]["message"]["content"] or ""
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise RuntimeError("Local LLM server returned a reply that is not an OpenAI chat completion")
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()

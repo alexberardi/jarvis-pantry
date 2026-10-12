@@ -59,7 +59,8 @@ def _names(resp):
 def test_disabled_listing_is_local_only_and_unmarked(client, seed_data):
     body = client.get("/v1/commands").json()
     assert body["total"] == 2
-    assert all("source" not in c for c in body["commands"])
+    # Without the mirror every item is still marked: "pantry" for packages published through this Pantry.
+    assert all(c["source"] == "pantry" for c in body["commands"])
 
 
 def test_merged_listing_local_first_and_deduplicated(client, seed_data, mirror):
@@ -71,7 +72,7 @@ def test_merged_listing_local_first_and_deduplicated(client, seed_data, mirror):
     assert set(names[:2]) == {"get_stock_price", "weather_alerts"}
     assert set(names[2:]) == {"get_weather_meteo", "spotify"}
     sources = {c["command_name"]: c["source"] for c in body["commands"]}
-    assert sources["weather_alerts"] == "local" and sources["spotify"] == "upstream"
+    assert sources["weather_alerts"] == "pantry" and sources["spotify"] == "upstream"
     local_alerts = next(c for c in body["commands"] if c["command_name"] == "weather_alerts")
     assert local_alerts["latest_version"] == "2.1.0"
 
@@ -92,7 +93,7 @@ def test_detail_falls_back_to_upstream_and_local_wins(client, seed_data, mirror)
     r = client.get("/v1/commands/spotify")
     assert r.status_code == 200 and r.json()["source"] == "upstream"
     local = client.get("/v1/commands/weather_alerts").json()
-    assert local["source"] == "local" and local["latest_version"] == "2.1.0"
+    assert local["source"] == "pantry" and local["latest_version"] == "2.1.0"
     assert client.get("/v1/commands/nonexistent").status_code == 404
     assert client.get("/v1/commands/spotify/versions").json()["versions"][0]["version"] == "2.1.7"
 
@@ -181,6 +182,8 @@ def test_add_from_repo_publishes_and_lists_as_local(client, admin, mirror, tmp_p
     dl = client.get("/v1/commands/my_private/download").json()
     assert dl["version"] == "0.3.0" and dl["git_commit_sha"] == "deadbeef" * 5
     assert "my_private" in _names(client.get("/v1/commands"))
+    listed = {c["command_name"]: c for c in client.get("/v1/commands").json()["commands"]}
+    assert listed["my_private"]["source"] == "local" and listed["my_private"]["author"] == "local"
 
     # Unpublish
     assert client.delete("/v1/admin/commands/my_private/local", headers=admin).status_code == 200
@@ -259,3 +262,104 @@ def test_local_llm_error_body_is_not_echoed(monkeypatch):
     with pytest.raises(RuntimeError) as exc:
         asyncio.run(llm_client.call_local("sys", [], "k", "m", 10, "http://srv"))
     assert "sk-SECRET" not in str(exc.value) and "HTTP 500" in str(exc.value)
+
+
+def test_source_is_present_without_the_mirror_and_marks_only_private_packages(client, seed_data, admin, tmp_path, monkeypatch):
+    # The Private page lists source == "local"; that must work with the mirror off and exclude public submissions.
+    monkeypatch.setattr("app.api.local_commands.clone_repo", lambda url, ref=None: (_repo(tmp_path), "ab" * 20))
+    r = client.post("/v1/admin/commands/from-repo",
+                    json={"github_repo_url": "https://github.com/me/jarvis-cmd-private"}, headers=admin)
+    assert r.status_code == 200, r.text
+    sources = {c["command_name"]: c["source"] for c in client.get("/v1/commands").json()["commands"]}
+    assert sources["my_private"] == "local"
+    assert sources["weather_alerts"] == "pantry" and sources["get_stock_price"] == "pantry"
+
+
+def test_local_author_cannot_be_claimed_by_a_github_login(client, db_session, admin, tmp_path, monkeypatch):
+    import httpx
+    from app.auth import validate_github_token
+    from app.models import Author
+
+    monkeypatch.setattr("app.api.local_commands.clone_repo", lambda url, ref=None: (_repo(tmp_path), "cd" * 20))
+    assert client.post("/v1/admin/commands/from-repo",
+                       json={"github_repo_url": "https://github.com/me/jarvis-cmd-private"}, headers=admin).status_code == 200
+    local = db_session.query(Author).filter(Author.is_local.is_(True)).one()
+    assert local.github_username != "local" and local.github_id == -1
+
+    class Resp:
+        status_code = 200
+        def json(self):
+            return {"id": 777, "login": "local", "name": "Real Local", "avatar_url": None}
+
+    class FakeHttp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, *a, **k): return Resp()
+
+    monkeypatch.setattr(httpx, "Client", lambda *a, **k: FakeHttp())
+    # A GitHub account literally named "local" is an ordinary author, not the owner of private packages.
+    real = validate_github_token("Bearer x", db_session)
+    assert real.id != local.id and real.github_username == "local" and real.is_local is False
+
+
+def test_upstream_fetch_does_not_follow_redirects_and_caps_the_reply(monkeypatch):
+    import httpx
+    seen = {}
+
+    class Streamed:
+        status_code = 200
+        def __init__(self, big): self.big = big
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def iter_bytes(self):
+            if self.big:
+                for _ in range(11):
+                    yield b"x" * (1024 * 1024)
+            else:
+                yield b'{"ok": true}'
+
+    def fake_stream(method, url, params=None, timeout=None, follow_redirects=None):
+        seen["follow_redirects"] = follow_redirects
+        return Streamed(seen.get("big", False))
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    monkeypatch.setenv("PANTRY_UPSTREAM_URL", UP)
+    from app import config
+    config.get_settings.cache_clear()
+    try:
+        assert upstream._get_json("/v1/commands") == (200, {"ok": True})
+        assert seen["follow_redirects"] is False
+        seen["big"] = True
+        with pytest.raises(upstream.UpstreamError):
+            upstream._get_json("/v1/commands")
+    finally:
+        monkeypatch.delenv("PANTRY_UPSTREAM_URL", raising=False)
+        config.get_settings.cache_clear()
+
+
+def test_local_llm_non_json_reply_is_a_clean_error(monkeypatch):
+    import asyncio
+
+    import httpx
+
+    from app.services import llm_client
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            raise ValueError("not json")
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            return Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: FakeClient())
+    with pytest.raises(RuntimeError, match="not an OpenAI chat completion"):
+        asyncio.run(llm_client.call_local("sys", [], "", "m", 10, "http://srv"))
