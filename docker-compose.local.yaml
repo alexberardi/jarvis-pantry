@@ -1,0 +1,78 @@
+# Run the Pantry, its Forge and the web interface on one machine, with the Forge using your own OpenAI-compatible
+# server (llama-swap, llama.cpp, vLLM, Ollama) instead of a paid API.
+#
+#   cp .env.local.example .env.local      # set PANTRY_DB_PASSWORD, and the addresses if not on localhost
+#   docker compose -f docker-compose.local.yaml --env-file .env.local up -d --build
+#
+# Web interface: http://localhost:7720   API and Swagger: http://localhost:7721/docs
+# Then open Settings in the web interface, enter your server's address and press Detect models.
+#
+# No Docker socket is mounted: generating and downloading work, but the sandboxed container tests that run when
+# publishing a submission are unavailable. The web interface is built from the sibling checkout
+# ../jarvis-pantry-web (override with PANTRY_WEB_PATH).
+services:
+  pantry-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pantry
+      POSTGRES_PASSWORD: ${PANTRY_DB_PASSWORD:?set PANTRY_DB_PASSWORD in .env.local}
+      POSTGRES_DB: jarvis_pantry
+    volumes:
+      - pantry-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pantry -d jarvis_pantry"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  pantry:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    environment:
+      PANTRY_PORT: "7721"
+      DATABASE_URL: postgresql://pantry:${PANTRY_DB_PASSWORD}@pantry-db:5432/jarvis_pantry
+      ADMIN_API_KEY: ${PANTRY_ADMIN_API_KEY:-}
+      # The Forge needs no per-request key for a local server.
+      BYPASS_LLM_KEY: "true"
+      FORGE_GENERATE_RATE_LIMIT_PER_HOUR: "60"
+      # Optional first-run defaults; the Settings page overrides them and stores its values in the database.
+      FORGE_LOCAL_BASE_URL: ${FORGE_LOCAL_BASE_URL:-}
+      FORGE_LOCAL_API_KEY: ${FORGE_LOCAL_API_KEY:-}
+      FORGE_LOCAL_MODEL: ${FORGE_LOCAL_MODEL:-}
+      FORGE_LOCAL_TIMEOUT: "900"
+    ports:
+      - "${PANTRY_PORT:-7721}:7721"
+    depends_on:
+      pantry-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7721/v1/forge/models')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  pantry-web:
+    build:
+      context: ${PANTRY_WEB_PATH:-../jarvis-pantry-web}
+      args:
+        # /v1 is proxied server-side to the API; both values are baked into the build.
+        PANTRY_API_URL: http://pantry:7721
+        # The browser calls long Forge requests directly, so this must be an address the browser can reach.
+        NEXT_PUBLIC_PANTRY_API_URL: ${PANTRY_PUBLIC_API_URL:-http://localhost:7721}
+    environment:
+      PORT: "7720"
+      HOSTNAME: 0.0.0.0
+      PANTRY_API_URL: http://pantry:7721
+    ports:
+      - "${PANTRY_WEB_PORT:-7720}:7720"
+    depends_on:
+      pantry:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pantry-db:

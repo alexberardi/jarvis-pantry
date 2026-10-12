@@ -10,7 +10,7 @@ from sqlalchemy import engine_from_config, pool
 # Add app to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.db import Base
+from app.db import Base, _driver_url
 from app import models  # noqa: F401 — registers models with Base
 
 config = context.config
@@ -21,7 +21,7 @@ if config.config_file_name is not None:
 # Override sqlalchemy.url from DATABASE_URL env var if set
 database_url = os.environ.get("DATABASE_URL")
 if database_url:
-    config.set_main_option("sqlalchemy.url", database_url)
+    config.set_main_option("sqlalchemy.url", _driver_url(database_url))
 
 target_metadata = Base.metadata
 

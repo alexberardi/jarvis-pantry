@@ -202,6 +202,15 @@ class ForgeDraft(Base):
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
 
 
+class AppSetting(Base):
+    """Small key/value store for settings changed at run time (the Forge's local LLM server, for one)."""
+    __tablename__ = "app_settings"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)
+
+
 class Submission(Base):
     __tablename__ = "submissions"
 

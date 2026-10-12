@@ -16,8 +16,10 @@ from dataclasses import dataclass
 from .llm_client import (
     LLM_MODELS,
     call_claude,
+    call_local,
     call_openai,
     call_openai_responses,
+    resolve_local_model,
 )
 
 logger = logging.getLogger(__name__)
@@ -225,19 +227,25 @@ async def generate_package(
     llm_api_key: str,
     model_id: str = "sonnet",
     conversation_history: list[dict[str, str]] | None = None,
+    local_config=None,
+    local_models: list[str] | None = None,
 ) -> ForgeResult:
     """Generate a Jarvis package from a natural language description.
 
     Args:
         description: What the user wants the command to do.
         llm_api_key: User's API key (used once, not stored).
-        model_id: Model ID from LLM_MODELS registry.
+        model_id: Model ID from LLM_MODELS registry, or ``local:<model>`` for the configured local server.
+        local_config: LocalLLMConfig (base URL, key, default model) for ``local:`` models.
+        local_models: Model ids last detected on the local server, used to resolve a bare ``local``.
         conversation_history: Optional prior messages for iterative refinement.
 
     Returns:
         ForgeResult with generated files and explanation.
     """
     model = LLM_MODELS.get(model_id)
+    if not model and local_config is not None and local_config.configured:
+        model = resolve_local_model(model_id, local_config.default_model, local_models)
     if not model:
         raise ValueError(f"Unknown model: {model_id}. Available: {', '.join(LLM_MODELS.keys())}")
 
@@ -250,7 +258,12 @@ async def generate_package(
 
     logger.info("Forge generating package, model=%s (%s), prompt_len=%d", model_id, model.api_model, len(system_prompt))
 
-    if model.provider == "anthropic":
+    if model.provider == "local":
+        raw = await call_local(
+            system_prompt, messages, llm_api_key or local_config.api_key,
+            model.api_model, model.max_tokens, local_config.base_url,
+        )
+    elif model.provider == "anthropic":
         raw = await call_claude(system_prompt, messages, llm_api_key, model.api_model, model.max_tokens)
     elif model.provider == "openai" and model.api_type == "responses":
         raw = await call_openai_responses(system_prompt, messages, llm_api_key, model.api_model, model.max_tokens)

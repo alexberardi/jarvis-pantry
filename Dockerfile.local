@@ -1,0 +1,32 @@
+# Local build of the Pantry for a home server. Unlike the upstream Dockerfile it
+#   - fetches the Jarvis command SDK itself (no manual clone into the build context),
+#   - leaves out the Docker CLI, because the local compose file mounts no Docker socket.
+FROM python:3.11-slim
+
+ARG SDK_REPO=https://github.com/alexberardi/jarvis-command-sdk
+ARG SDK_REF=6e04cd0
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# SDK (the Forge builds its authoring spec from it)
+RUN git clone "$SDK_REPO" /opt/jarvis-command-sdk && \
+    git -C /opt/jarvis-command-sdk checkout "$SDK_REF" && \
+    pip install --no-cache-dir /opt/jarvis-command-sdk
+
+COPY pyproject.toml .
+RUN pip install --no-cache-dir .
+
+COPY app/ app/
+COPY alembic/ alembic/
+COPY alembic.ini .
+COPY config/ config/
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PANTRY_PORT=7721
+ENV JARVIS_SDK_PATH=/opt/jarvis-command-sdk
+
+CMD ["bash", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PANTRY_PORT:-7721}"]
