@@ -37,6 +37,10 @@ services:
       # Master switch for the Settings page, local models and /v1/forge/local-llm. Off (or unset) hides all of it
       # and the Pantry behaves as upstream.
       FORGE_LOCAL_LLM_ENABLED: ${FORGE_LOCAL_LLM_ENABLED:-true}
+      # Public catalogue to show and install from next to your own private packages. Empty serves only local packages.
+      PANTRY_UPSTREAM_URL: ${PANTRY_UPSTREAM_URL:-https://pantry-api.jarvisautomation.io}
+      # Needed to add a package from a repository (POST /v1/admin/commands/from-repo); also for private GitHub repos.
+      PANTRY_GITHUB_TOKEN: ${PANTRY_GITHUB_TOKEN:-}
       # The Forge needs no per-request key for a local server.
       BYPASS_LLM_KEY: "true"
       FORGE_GENERATE_RATE_LIMIT_PER_HOUR: "60"

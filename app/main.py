@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import admin_bulk, browse, command_detail, download, forge, forge_drafts, manage, routines, submit, reviews
+from .api import admin_bulk, browse, local_commands, command_detail, download, forge, forge_drafts, manage, routines, submit, reviews
 from .config import get_settings
 from .services.callback_timeout_watcher import callback_timeout_watcher
 from .services.job_queue import validation_queue
@@ -110,6 +110,7 @@ app.include_router(download.router, tags=["download"])
 app.include_router(submit.router, tags=["submission"])
 app.include_router(reviews.router, tags=["reviews"])
 app.include_router(manage.router, tags=["auth", "management"])
+app.include_router(local_commands.router, tags=["admin"])
 app.include_router(forge.router, tags=["forge"])
 app.include_router(forge_drafts.router, tags=["forge"])
 app.include_router(routines.router, tags=["routines"])

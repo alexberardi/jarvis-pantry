@@ -46,6 +46,36 @@ The compose file mounts no Docker socket, so the sandboxed container tests used 
 unavailable. Local models are slower and weaker than hosted ones; the Forge's static checks do not import or run the
 generated code, so test what it produces.
 
+## Public and private packages together (upstream mirror)
+
+Set `PANTRY_UPSTREAM_URL` (the local compose file defaults it to the public Pantry's API) and this Pantry lists the public
+catalogue **and** its own packages as one store, so nodes need only this address:
+
+- `GET /v1/commands` merges both (your packages first, then public ones; a local name shadows a public one), each item with
+  `"source": "local" | "upstream"`. Search, category and type filters, sorting and pagination apply to the merged list, and
+  `/v1/categories` counts both.
+- `GET /v1/commands/{name}`, `/versions` and `/download` answer locally first and fall back to the public Pantry. Nodes still
+  clone each package from its GitHub repository.
+- The public list is cached for `PANTRY_UPSTREAM_TTL_SECONDS` (300). If the upstream is offline the last copy is served, or
+  just your own packages.
+
+Point a node at it with `command_store_url` in its config (for example `http://pantry.lan:7721`).
+
+**Adding a private package.** The public submission flow needs GitHub login and container tests, so for your own
+repositories there is an administrator shortcut:
+
+```bash
+curl -s -X POST http://pantry.lan:7721/v1/admin/commands/from-repo \
+  -H "X-Admin-Key: $ADMIN_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"github_repo_url": "https://github.com/you/jarvis-cmd-thing", "ref": "v1.0.0"}'
+```
+
+It clones the repository, validates the manifest and publishes it as a local package. There is **no AI security review and
+no container test**, and it refuses to run unless `ADMIN_API_KEY` is set, because nodes install what you add. A private
+GitHub repository needs a token, in the request or in `PANTRY_GITHUB_TOKEN` (used for the clone only, never stored or
+returned); a node installing a private repository needs its own access to it. `DELETE
+/v1/admin/commands/{name}/local` unpublishes one. Re-run the POST to publish a new version.
+
 ## Setup & run
 
 ```bash
