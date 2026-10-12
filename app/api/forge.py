@@ -67,7 +67,14 @@ def _require_enabled() -> None:
 @router.get("/v1/forge/features")
 def get_forge_features():
     """Which optional Forge features this Pantry has switched on. The web interface hides what is off."""
-    return {"local_llm": local_llm.is_enabled()}
+    from ..config import get_settings
+    settings = get_settings()
+    return {
+        "local_llm": local_llm.is_enabled(),
+        # Adding a package from a repository only works when an admin key is configured.
+        "private_packages": bool(getattr(settings, "admin_api_key", "")),
+        "upstream_mirror": bool(getattr(settings, "pantry_upstream_url", "")),
+    }
 
 
 def _require_admin(x_admin_key: str | None) -> None:
