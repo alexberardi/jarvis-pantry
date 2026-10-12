@@ -36,6 +36,10 @@ class Settings(BaseSettings):
         5, alias="FORGE_GENERATE_RATE_LIMIT_PER_HOUR",
     )
 
+    # Local LLM server support for the Forge (Settings page, /v1/forge/local-llm, local models in the model list).
+    # Off by default, so a deployment that does not opt in behaves exactly as upstream and shows none of it.
+    forge_local_llm_enabled: bool = Field(False, alias="FORGE_LOCAL_LLM_ENABLED")
+
     # Validation pipeline
     max_concurrent_container_tests: int = Field(3, alias="MAX_CONCURRENT_CONTAINER_TESTS")
     max_concurrent_clones: int = Field(5, alias="MAX_CONCURRENT_CLONES")

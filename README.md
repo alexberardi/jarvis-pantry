@@ -29,6 +29,10 @@ cp .env.local.example .env.local            # set PANTRY_DB_PASSWORD (and PANTRY
 docker compose -f docker-compose.local.yaml --env-file .env.local up -d --build
 ```
 
+The local LLM features are behind one switch, `FORGE_LOCAL_LLM_ENABLED` (`true` in the local compose file, **off by
+default** elsewhere). While it is off the Settings link is hidden, `/v1/forge/local-llm*` return 404, local models are not
+listed and the Pantry behaves exactly as upstream; `GET /v1/forge/features` reports the state.
+
 Open <http://localhost:7720>, go to **Settings**, enter the address of any OpenAI-compatible server (llama-swap,
 llama.cpp `llama-server`, vLLM, Ollama) and its API key if it has one, and press **Detect models**. The models it
 reports (`GET /v1/models`) fill the Forge's model list; pick a default and save. Settings are stored in the database.

@@ -21,11 +21,16 @@ def _fake_get(models, status=200, seen=None):
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
+    from app import config
+    monkeypatch.setenv("FORGE_LOCAL_LLM_ENABLED", "true")
+    config.get_settings.cache_clear()
     local_llm._models_cache.clear()
     for k in ("FORGE_LOCAL_BASE_URL", "FORGE_LOCAL_API_KEY", "FORGE_LOCAL_MODEL"):
         monkeypatch.delenv(k, raising=False)
     yield
     local_llm._models_cache.clear()
+    monkeypatch.delenv("FORGE_LOCAL_LLM_ENABLED", raising=False)
+    config.get_settings.cache_clear()
 
 
 def test_normalise_base_url():
@@ -140,3 +145,33 @@ def test_generate_uses_selected_local_model_without_key(client, monkeypatch):
 def test_generate_unknown_local_model_when_unconfigured(client):
     r = client.post("/v1/forge/generate", json={"description": "x", "model": "local:nothing", "llm_api_key": ""})
     assert r.status_code == 400 and "Unknown model" in r.json()["detail"]
+
+
+def test_features_reports_enabled(client):
+    assert client.get("/v1/forge/features").json() == {"local_llm": True}
+
+
+def test_everything_is_hidden_when_disabled(client, monkeypatch):
+    from app import config
+    monkeypatch.setenv("FORGE_LOCAL_LLM_ENABLED", "false")
+    monkeypatch.setenv("FORGE_LOCAL_BASE_URL", "http://env-srv:8080")  # must be ignored while disabled
+    config.get_settings.cache_clear()
+    monkeypatch.setattr(httpx, "get", _fake_get(["qwen-9b"]))
+
+    assert client.get("/v1/forge/features").json() == {"local_llm": False}
+    assert client.get("/v1/forge/local-llm").status_code == 404
+    assert client.put("/v1/forge/local-llm", json={"base_url": "http://srv:8080"}).status_code == 404
+    assert client.post("/v1/forge/local-llm/detect", json={"base_url": "http://srv:8080"}).status_code == 404
+
+    ids = [m["id"] for m in client.get("/v1/forge/models").json()["models"]]
+    assert ids[0] == "haiku" and not any(i.startswith("local") for i in ids)
+
+    r = client.post("/v1/forge/generate", json={"description": "x", "model": "local:qwen-9b", "llm_api_key": ""})
+    assert r.status_code == 400 and "Unknown model" in r.json()["detail"]
+
+
+def test_disabled_by_default(client, monkeypatch):
+    from app import config
+    monkeypatch.delenv("FORGE_LOCAL_LLM_ENABLED", raising=False)
+    config.get_settings.cache_clear()
+    assert client.get("/v1/forge/features").json() == {"local_llm": False}
