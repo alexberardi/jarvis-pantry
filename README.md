@@ -4,13 +4,6 @@ The community command store ("Pantry") and AI **Forge** for the Jarvis voice ass
 
 Runs on **port 7721**.
 
-> **This is a fork** ([opticon454/jarvis-pantry](https://github.com/opticon454/jarvis-pantry), branch `local-llm-settings`)
-> of [alexberardi/jarvis-pantry](https://github.com/alexberardi/jarvis-pantry). It adds three things for running your own
-> Pantry on a home network: a Forge that uses a model **on your own hardware**, a catalogue that shows the **public Pantry
-> and your own packages together**, and a way to add **private packages** from a Git repository. All of it is opt-in and
-> off by default, so a deployment that sets none of the variables below behaves exactly like upstream. The matching web
-> interface is [opticon454/jarvis-pantry-web](https://github.com/opticon454/jarvis-pantry-web), same branch.
-
 ## What it does
 
 - **Catalog** — public, browsable store of Jarvis commands (`/` catalog + command detail, search/browse).
@@ -21,7 +14,12 @@ Runs on **port 7721**.
 - **Forge** — AI-assisted command generation plus a validation pipeline: LLM generation, static analysis, security review, lockfile resolution, and sandboxed **container tests** before a submission is accepted (see `app/services/`).
 - **Admin** — bulk management endpoints protected by `ADMIN_API_KEY`.
 
-## What this fork adds
+## Running your own Pantry
+
+Three opt-in features make it practical to run a Pantry on a home or office network: a Forge that uses a model on your own
+hardware, a catalogue that shows the public Pantry and your own packages together, and a way to publish private packages
+from a Git repository. None of them changes the public Pantry's behaviour. Each is off until its variable is set, so a
+deployment that sets none of them runs exactly as before.
 
 | Feature | Switch | What it does | Needs a key? |
 |---|---|---|---|
@@ -242,18 +240,18 @@ Copy `.env.example` to `.env`. Key variables:
 | `JARVIS_SDK_PATH` | Path to `jarvis-command-sdk` used by container tests |
 | `CONTAINER_TEST_TIMEOUT` / `MAX_CONCURRENT_CONTAINER_TESTS` / `MAX_CONCURRENT_CLONES` | Forge validation pipeline tuning |
 | `SUBMISSION_RATE_LIMIT_PER_HOUR` / `RATE_LIMIT_DISABLED` | Per-IP submission rate limiting |
-| `FORGE_LOCAL_LLM_ENABLED` | *(fork)* Master switch for the local LLM features (default off) |
-| `FORGE_LOCAL_BASE_URL` / `FORGE_LOCAL_API_KEY` / `FORGE_LOCAL_MODEL` | *(fork)* First-run defaults for the local server |
-| `FORGE_LOCAL_TIMEOUT` / `FORGE_LOCAL_MAX_TOKENS` | *(fork)* Read timeout (900 s) and output cap (8192) for local models |
-| `PANTRY_UPSTREAM_URL` | *(fork)* Public Pantry API to mirror (empty = off) |
-| `PANTRY_UPSTREAM_TTL_SECONDS` / `PANTRY_UPSTREAM_TIMEOUT_SECONDS` | *(fork)* Cache lifetime (300) and request timeout (8) |
-| `PANTRY_GITHUB_TOKEN` | *(fork)* Token for cloning private repositories when adding a package |
+| `FORGE_LOCAL_LLM_ENABLED` | Master switch for the local LLM features (default off) |
+| `FORGE_LOCAL_BASE_URL` / `FORGE_LOCAL_API_KEY` / `FORGE_LOCAL_MODEL` | First-run defaults for the local server |
+| `FORGE_LOCAL_TIMEOUT` / `FORGE_LOCAL_MAX_TOKENS` | Read timeout (900 s) and output cap (8192) for local models |
+| `PANTRY_UPSTREAM_URL` | Public Pantry API to mirror (empty = off) |
+| `PANTRY_UPSTREAM_TTL_SECONDS` / `PANTRY_UPSTREAM_TIMEOUT_SECONDS` | Cache lifetime (300) and request timeout (8) |
+| `PANTRY_GITHUB_TOKEN` | Token for cloning private repositories when adding a package |
 
-## Staying in step with upstream
+## Where the code lives
 
-The fork's changes are additive: new modules (`app/services/local_llm.py`, `app/services/upstream.py`,
-`app/api/local_commands.py`), one migration, and small hooks in `browse.py`, `command_detail.py`, `download.py`, `forge.py`
-and `llm_client.py`. Rebase `local-llm-settings` onto upstream `main` to take new releases.
+These features are additive: new modules (`app/services/local_llm.py`, `app/services/upstream.py`,
+`app/api/local_commands.py`), one migration (`app_settings`), and small hooks in `app/api/browse.py`,
+`command_detail.py`, `download.py`, `forge.py` and `services/llm_client.py`.
 
 ## Testing
 
@@ -261,7 +259,7 @@ and `llm_client.py`. Rebase `local-llm-settings` onto upstream `main` to take ne
 pytest
 ```
 
-The fork's own tests are `tests/test_local_llm.py` (settings precedence, model detection, the `local:` model ids, the
+The tests for these features are `tests/test_local_llm.py` (settings precedence, model detection, the `local:` model ids, the
 feature switch) and `tests/test_upstream.py` (merge order, shadowing, caching, offline fallback).
 
 ## License
