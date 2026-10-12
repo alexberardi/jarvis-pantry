@@ -20,6 +20,28 @@ Runs on **port 7721**.
 - Docker & Docker Compose (recommended)
 - PostgreSQL (`DATABASE_URL`)
 
+## Run it locally with your own LLM server
+
+The Forge can build packages with a model on your own hardware instead of a paid API.
+
+```bash
+cp .env.local.example .env.local            # set PANTRY_DB_PASSWORD (and PANTRY_PUBLIC_API_URL on a server)
+docker compose -f docker-compose.local.yaml --env-file .env.local up -d --build
+```
+
+Open <http://localhost:7720>, go to **Settings**, enter the address of any OpenAI-compatible server (llama-swap,
+llama.cpp `llama-server`, vLLM, Ollama) and its API key if it has one, and press **Detect models**. The models it
+reports (`GET /v1/models`) fill the Forge's model list; pick a default and save. Settings are stored in the database.
+
+Also available over the API: `GET/PUT /v1/forge/local-llm`, `POST /v1/forge/local-llm/detect`, and `GET /v1/forge/models`
+(local models first, marked `"default": true`). Set `ADMIN_API_KEY` to require `X-Admin-Key` for changes and probes; with
+none set, anyone who can reach the port can change them, so keep it on a trusted network. The server fetches whatever
+address is saved, so do not expose the API to untrusted clients.
+
+The compose file mounts no Docker socket, so the sandboxed container tests used when publishing a submission are
+unavailable. Local models are slower and weaker than hosted ones; the Forge's static checks do not import or run the
+generated code, so test what it produces.
+
 ## Setup & run
 
 ```bash

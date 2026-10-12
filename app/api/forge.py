@@ -13,8 +13,12 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from ..db import get_db
+from ..services import local_llm
 
 from ..rate_limiter import RateLimiter, _forge_generate_cap_per_hour
 
@@ -39,10 +43,87 @@ class ForgeGenerateRequest(BaseModel):
 
 
 @router.get("/v1/forge/models")
-def get_forge_models():
-    """Return available models with estimated per-generation costs."""
+def get_forge_models(db: Session = Depends(get_db)):
+    """Return available models with estimated per-generation costs.
+
+    Models found on the configured local server come first, with the default marked ``"default": true``.
+    """
     from ..services.llm_client import get_available_models
-    return {"models": get_available_models()}
+    cfg = local_llm.get_config(db)
+    return {"models": get_available_models(
+        local_models=local_llm.list_models_cached(cfg),
+        local_default=cfg.default_model,
+    )}
+
+
+# ── Local LLM server settings ─────────────────────────────────────────
+
+def _require_admin(x_admin_key: str | None) -> None:
+    """When ADMIN_API_KEY is set, settings changes and server probes need it. Unset means an open, trusted LAN."""
+    from ..config import get_settings
+    expected = getattr(get_settings(), "admin_api_key", "")
+    if expected and x_admin_key != expected:
+        raise HTTPException(401, "Admin key required")
+
+
+class LocalLLMSettingsRequest(BaseModel):
+    base_url: str
+    api_key: str | None = None   # None keeps the stored key, "" clears it
+    default_model: str | None = None
+
+
+class LocalLLMDetectRequest(BaseModel):
+    base_url: str | None = None  # None tests the saved server
+    api_key: str | None = None
+
+
+def _settings_view(cfg: local_llm.LocalLLMConfig) -> dict[str, Any]:
+    return {
+        "base_url": cfg.base_url,
+        "has_api_key": bool(cfg.api_key),
+        "default_model": cfg.default_model,
+        "source": cfg.source,
+    }
+
+
+@router.get("/v1/forge/local-llm")
+def get_local_llm_settings(db: Session = Depends(get_db)):
+    """Current local server settings. The API key is never returned, only whether one is set."""
+    return _settings_view(local_llm.get_config(db))
+
+
+@router.put("/v1/forge/local-llm")
+def put_local_llm_settings(
+    body: LocalLLMSettingsRequest,
+    x_admin_key: str | None = Header(None, alias="X-Admin-Key"),
+    db: Session = Depends(get_db),
+):
+    """Save the local OpenAI-compatible server (llama-swap, llama.cpp, vLLM, Ollama)."""
+    _require_admin(x_admin_key)
+    try:
+        cfg = local_llm.save_config(db, body.base_url, body.api_key, body.default_model)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _settings_view(cfg)
+
+
+@router.post("/v1/forge/local-llm/detect")
+def detect_local_llm_models(
+    body: LocalLLMDetectRequest | None = None,
+    x_admin_key: str | None = Header(None, alias="X-Admin-Key"),
+    db: Session = Depends(get_db),
+):
+    """Ask the server which models it serves. Tests the supplied URL and key, or the saved ones when omitted."""
+    _require_admin(x_admin_key)
+    body = body or LocalLLMDetectRequest()
+    saved = local_llm.get_config(db)
+    base_url = body.base_url if body.base_url is not None else saved.base_url
+    api_key = body.api_key if body.api_key is not None else saved.api_key
+    try:
+        models = local_llm.detect_models(base_url, api_key)
+    except (local_llm.LocalLLMError, ValueError) as e:
+        return {"ok": False, "error": str(e), "models": []}
+    return {"ok": True, "models": models, "default_model": saved.default_model}
 
 
 @router.get("/v1/forge/spec")
@@ -64,7 +145,7 @@ def get_forge_spec(format: str = Query("json", enum=["json", "markdown"])):
 
 
 @router.post("/v1/forge/generate")
-async def generate_package(body: ForgeGenerateRequest, request: Request):
+async def generate_package(body: ForgeGenerateRequest, request: Request, db: Session = Depends(get_db)):
     """Generate a Jarvis package from a natural language description.
 
     BYOK — the user provides their own LLM API key. Used once, never stored.
@@ -78,18 +159,24 @@ async def generate_package(body: ForgeGenerateRequest, request: Request):
 
     if not body.description.strip():
         raise HTTPException(400, "Description is required")
-    if not get_settings().bypass_llm_key and not body.llm_api_key.strip():
+    is_local = body.model == "local" or body.model.startswith("local:")
+    if not is_local and not get_settings().bypass_llm_key and not body.llm_api_key.strip():
         raise HTTPException(400, "API key is required")
 
     from ..services.forge_generator import generate_package as do_generate
 
+    local_cfg = local_llm.get_config(db)
     try:
         result = await do_generate(
             description=body.description.strip(),
             llm_api_key=body.llm_api_key.strip(),
             model_id=body.model,
             conversation_history=body.conversation_history,
+            local_config=local_cfg,
+            local_models=local_llm.list_models_cached(local_cfg),
         )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except RuntimeError as e:
         raise HTTPException(502, str(e))
 
