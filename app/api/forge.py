@@ -58,6 +58,18 @@ def get_forge_models(db: Session = Depends(get_db)):
 
 # ── Local LLM server settings ─────────────────────────────────────────
 
+def _require_enabled() -> None:
+    """Local LLM endpoints do not exist unless FORGE_LOCAL_LLM_ENABLED is set."""
+    if not local_llm.is_enabled():
+        raise HTTPException(404, "Not Found")
+
+
+@router.get("/v1/forge/features")
+def get_forge_features():
+    """Which optional Forge features this Pantry has switched on. The web interface hides what is off."""
+    return {"local_llm": local_llm.is_enabled()}
+
+
 def _require_admin(x_admin_key: str | None) -> None:
     """When ADMIN_API_KEY is set, settings changes and server probes need it. Unset means an open, trusted LAN."""
     from ..config import get_settings
@@ -89,6 +101,7 @@ def _settings_view(cfg: local_llm.LocalLLMConfig) -> dict[str, Any]:
 @router.get("/v1/forge/local-llm")
 def get_local_llm_settings(db: Session = Depends(get_db)):
     """Current local server settings. The API key is never returned, only whether one is set."""
+    _require_enabled()
     return _settings_view(local_llm.get_config(db))
 
 
@@ -99,6 +112,7 @@ def put_local_llm_settings(
     db: Session = Depends(get_db),
 ):
     """Save the local OpenAI-compatible server (llama-swap, llama.cpp, vLLM, Ollama)."""
+    _require_enabled()
     _require_admin(x_admin_key)
     try:
         cfg = local_llm.save_config(db, body.base_url, body.api_key, body.default_model)
@@ -114,6 +128,7 @@ def detect_local_llm_models(
     db: Session = Depends(get_db),
 ):
     """Ask the server which models it serves. Tests the supplied URL and key, or the saved ones when omitted."""
+    _require_enabled()
     _require_admin(x_admin_key)
     body = body or LocalLLMDetectRequest()
     saved = local_llm.get_config(db)

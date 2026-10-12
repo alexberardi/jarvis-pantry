@@ -42,6 +42,12 @@ class LocalLLMConfig:
         return bool(self.base_url)
 
 
+def is_enabled() -> bool:
+    """Master switch (FORGE_LOCAL_LLM_ENABLED). When off, none of the local LLM features are reachable or visible."""
+    from ..config import get_settings
+    return bool(getattr(get_settings(), "forge_local_llm_enabled", False))
+
+
 def normalise_base_url(url: str) -> str:
     """Strip whitespace, a trailing slash and a trailing /v1, and require http(s)."""
     url = (url or "").strip().rstrip("/")
@@ -69,6 +75,8 @@ def _set(db: Session, key: str, value: str | None) -> None:
 
 def get_config(db: Session) -> LocalLLMConfig:
     """Database values win; environment variables fill anything the database does not hold."""
+    if not is_enabled():
+        return LocalLLMConfig()
     base = _get(db, KEY_BASE_URL)
     key = _get(db, KEY_API_KEY)
     model = _get(db, KEY_DEFAULT_MODEL)
