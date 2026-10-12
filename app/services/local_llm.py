@@ -81,7 +81,12 @@ def get_config(db: Session) -> LocalLLMConfig:
     key = _get(db, KEY_API_KEY)
     model = _get(db, KEY_DEFAULT_MODEL)
     if base is not None:
-        return LocalLLMConfig(base_url=base, api_key=key or "", default_model=model or "", source="database")
+        # A value never saved (None) falls back to the environment; one saved as "" was cleared on purpose.
+        if key is None:
+            key = os.environ.get("FORGE_LOCAL_API_KEY", "")
+        if model is None:
+            model = os.environ.get("FORGE_LOCAL_MODEL", "")
+        return LocalLLMConfig(base_url=base, api_key=key, default_model=model, source="database")
     env_base = os.environ.get("FORGE_LOCAL_BASE_URL", "").strip().rstrip("/")
     if env_base:
         return LocalLLMConfig(
