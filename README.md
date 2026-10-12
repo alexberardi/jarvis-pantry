@@ -211,8 +211,8 @@ Rotate the key by changing the variable and restarting.
 
 The compose file sets `BYPASS_LLM_KEY=true` (the Forge needs no per-request key for a local server), a Forge rate limit of
 60 requests per hour (`FORGE_GENERATE_RATE_LIMIT_PER_HOUR`), and `FORGE_LOCAL_TIMEOUT=900`. One code fix rides along:
-SQLAlchemy 2.1 maps a bare `postgresql://` URL to the psycopg v3 driver, so `app/db.py` (and Alembic's `env.py`) rewrite it to
-`postgresql+psycopg2://`, the driver this project installs.
+SQLAlchemy 2.1 maps a bare `postgresql://` URL to the psycopg v3 driver, so the Pantry rewrites it to
+`postgresql+psycopg2://`, the driver this project installs (`DATABASE_URL` normalisation in `app/config.py`).
 
 ## Setup & run
 
