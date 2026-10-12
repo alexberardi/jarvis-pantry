@@ -148,7 +148,8 @@ def test_generate_unknown_local_model_when_unconfigured(client):
 
 
 def test_features_reports_enabled(client):
-    assert client.get("/v1/forge/features").json() == {"local_llm": True}
+    f = client.get("/v1/forge/features").json()
+    assert f["local_llm"] is True and f["private_packages"] is False and f["upstream_mirror"] is False
 
 
 def test_everything_is_hidden_when_disabled(client, monkeypatch):
@@ -158,7 +159,7 @@ def test_everything_is_hidden_when_disabled(client, monkeypatch):
     config.get_settings.cache_clear()
     monkeypatch.setattr(httpx, "get", _fake_get(["qwen-9b"]))
 
-    assert client.get("/v1/forge/features").json() == {"local_llm": False}
+    assert client.get("/v1/forge/features").json()["local_llm"] is False
     assert client.get("/v1/forge/local-llm").status_code == 404
     assert client.put("/v1/forge/local-llm", json={"base_url": "http://srv:8080"}).status_code == 404
     assert client.post("/v1/forge/local-llm/detect", json={"base_url": "http://srv:8080"}).status_code == 404
@@ -174,7 +175,7 @@ def test_disabled_by_default(client, monkeypatch):
     from app import config
     monkeypatch.delenv("FORGE_LOCAL_LLM_ENABLED", raising=False)
     config.get_settings.cache_clear()
-    assert client.get("/v1/forge/features").json() == {"local_llm": False}
+    assert client.get("/v1/forge/features").json()["local_llm"] is False
 
 
 def test_cors_preflight_allows_put_from_the_web_interface(client):
@@ -202,3 +203,16 @@ def test_saving_only_the_address_keeps_the_environment_key_and_model(client, mon
     # Clearing it on purpose is respected.
     r = client.put("/v1/forge/local-llm", json={"base_url": "http://other:8080", "api_key": ""})
     assert r.json()["has_api_key"] is False
+
+
+def test_features_report_private_packages_and_mirror(client, monkeypatch):
+    from app import config
+    monkeypatch.setenv("ADMIN_API_KEY", "adm")
+    monkeypatch.setenv("PANTRY_UPSTREAM_URL", "https://public.example")
+    config.get_settings.cache_clear()
+    try:
+        f = client.get("/v1/forge/features").json()
+        assert f["private_packages"] is True and f["upstream_mirror"] is True
+    finally:
+        monkeypatch.delenv("ADMIN_API_KEY"); monkeypatch.delenv("PANTRY_UPSTREAM_URL")
+        config.get_settings.cache_clear()
