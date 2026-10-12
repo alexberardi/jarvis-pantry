@@ -32,6 +32,7 @@ from ..auth import exchange_github_code
 from ..config import get_settings
 from ..db import SessionLocal, get_db
 from ..models import Author, Command, Submission
+from ..services.finalize import OPERATOR_GITHUB_USERNAME
 from ..services.github_service import (
     RepoValidationError,
     cleanup_repo,
@@ -60,7 +61,7 @@ _bulk_clone_semaphore = asyncio.Semaphore(get_settings().max_concurrent_clones)
 # bulk-submitted Submission row so the operator's curation activity is
 # distinguishable from regular author submissions. github_id=0 mirrors the
 # pre-OAuth sentinel pattern already used in finalize_submission.
-_OPERATOR_GITHUB_USERNAME = "pantry-operator"
+_OPERATOR_GITHUB_USERNAME = OPERATOR_GITHUB_USERNAME
 
 
 def _require_admin_key(x_admin_key: str) -> None:

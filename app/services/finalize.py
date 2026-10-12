@@ -127,6 +127,29 @@ def build_dispatch_context(
     }
 
 
+# The operator bulk-upload author (app/api/admin_bulk.py). It curates the
+# catalogue, so it may publish new versions of any package.
+OPERATOR_GITHUB_USERNAME = "pantry-operator"
+
+
+def may_publish_to(db: Session, existing: Command | None, author_id: int) -> bool:
+    """Whether ``author_id`` may publish a version of the package ``existing``.
+
+    A new name is free; an existing package takes versions only from its own
+    author or the operator. Without this, any GitHub user could publish a repo
+    whose manifest reuses a popular package's name and repoint that package
+    at their code.
+    """
+    if existing is None or existing.author_id == author_id:
+        return True
+    submitter = db.get(Author, author_id)
+    return (
+        submitter is not None
+        and submitter.github_username == OPERATOR_GITHUB_USERNAME
+        and submitter.github_id == 0
+    )
+
+
 def finalize_submission(
     *,
     db: Session,
@@ -170,6 +193,18 @@ def finalize_submission(
     danger_rating = review.danger_score if review else None
 
     existing = db.query(Command).filter(Command.command_name == command_name).first()
+    if not may_publish_to(db, existing, submission.author_id):
+        # Re-checked here, not only at submit time: another author may have
+        # published the name while this submission was in the queue.
+        submission.status = "rejected"
+        submission.error_message = f"Package name '{command_name}' belongs to another author"
+        submission.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        logger.warning(
+            "Submission %d rejected: %s is owned by author %d, not %d",
+            submission.id, command_name, existing.author_id, submission.author_id,
+        )
+        return
     if existing:
         command = existing
         command.description = manifest.get("description", command.description)
