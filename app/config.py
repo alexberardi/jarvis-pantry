@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # Off by default, so a deployment that does not opt in behaves exactly as upstream and shows none of it.
     forge_local_llm_enabled: bool = Field(False, alias="FORGE_LOCAL_LLM_ENABLED")
 
+    # Public catalogue to mirror next to this Pantry's own (private) packages, e.g. https://pantry-api.jarvisautomation.io.
+    # Empty (default) means this Pantry serves only what it holds, as upstream.
+    pantry_upstream_url: str = Field("", alias="PANTRY_UPSTREAM_URL")
+    pantry_upstream_ttl_seconds: int = Field(300, alias="PANTRY_UPSTREAM_TTL_SECONDS")
+    pantry_upstream_timeout_seconds: float = Field(8.0, alias="PANTRY_UPSTREAM_TIMEOUT_SECONDS")
+    # Token for cloning private GitHub repositories when adding a package from a repository.
+    pantry_github_token: str = Field("", alias="PANTRY_GITHUB_TOKEN")
+
     # Validation pipeline
     max_concurrent_container_tests: int = Field(3, alias="MAX_CONCURRENT_CONTAINER_TESTS")
     max_concurrent_clones: int = Field(5, alias="MAX_CONCURRENT_CLONES")

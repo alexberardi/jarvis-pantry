@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import Command, CommandVersion, Review, SecurityReport
+from ..services import upstream
 
 router = APIRouter()
 
@@ -18,6 +19,9 @@ def get_command(command_name: str, db: Session = Depends(get_db)):
     ).first()
 
     if not cmd:
+        remote = upstream.get_detail(command_name) if upstream.is_enabled() else None
+        if remote is not None:
+            return remote
         raise HTTPException(404, f"Command '{command_name}' not found")
 
     # Get latest security report
@@ -73,6 +77,7 @@ def get_command(command_name: str, db: Session = Depends(get_db)):
         "security_report": security_report,
         "review_count": len(reviews),
         "avg_rating": round(avg_rating, 1) if avg_rating else None,
+        **({"source": "local"} if upstream.is_enabled() else {}),
     }
 
 
@@ -85,6 +90,9 @@ def list_versions(command_name: str, db: Session = Depends(get_db)):
     ).first()
 
     if not cmd:
+        remote = upstream.get_detail(command_name, "/versions") if upstream.is_enabled() else None
+        if remote is not None:
+            return remote
         raise HTTPException(404, f"Command '{command_name}' not found")
 
     versions = db.query(CommandVersion).filter(
