@@ -189,3 +189,16 @@ def test_cors_preflight_allows_put_from_the_web_interface(client):
     )
     assert r.status_code == 200
     assert "PUT" in r.headers["access-control-allow-methods"]
+
+
+def test_saving_only_the_address_keeps_the_environment_key_and_model(client, monkeypatch):
+    # First save from the web page sends no key: the key from the environment must keep working.
+    monkeypatch.setenv("FORGE_LOCAL_BASE_URL", "http://env-srv:8080")
+    monkeypatch.setenv("FORGE_LOCAL_API_KEY", "envkey")
+    monkeypatch.setenv("FORGE_LOCAL_MODEL", "env-model")
+    r = client.put("/v1/forge/local-llm", json={"base_url": "http://other:8080"})
+    assert r.json()["has_api_key"] is True and r.json()["default_model"] == "env-model"
+    assert r.json()["source"] == "database"
+    # Clearing it on purpose is respected.
+    r = client.put("/v1/forge/local-llm", json={"base_url": "http://other:8080", "api_key": ""})
+    assert r.json()["has_api_key"] is False
