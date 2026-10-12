@@ -1513,3 +1513,46 @@ class TestLockfileResolverHelper:
     def test_cap_constant_is_50kb(self):
         from app.services import lockfile_resolver
         assert lockfile_resolver.LOCKFILE_SIZE_CAP_BYTES == 50 * 1024
+
+
+class TestQuickSubmitNameOwnership:
+    """A package name already owned by another author can't be republished by
+    someone else: that would repoint the package at the submitter's code."""
+
+    @patch("app.api.submit.verify_repo_access", new_callable=AsyncMock, return_value="testuser")
+    @patch("app.api.submit.get_settings")
+    @patch("app.api.submit.clone_repo")
+    @patch("app.api.submit.validation_queue")
+    def test_taken_name_is_refused(self, mock_queue, mock_clone, mock_settings, mock_verify,
+                                   client, seed_data, db_session, tmp_path):
+        owner = Author(github_id=4242, github_username="original-owner", display_name="Owner")
+        db_session.add(owner)
+        db_session.flush()
+        db_session.add(Command(
+            command_name="test_quick", display_name="Test", description="d",
+            github_repo_url="https://github.com/original-owner/jarvis-command-test",
+            author_id=owner.id, latest_version="1.0.0",
+        ))
+        db_session.commit()
+        _setup_quick_submit_auth(seed_data)
+        settings = mock_settings.return_value
+        settings.bypass_llm_key = True
+        settings.submission_rate_limit_per_hour = 100
+        settings.submission_rate_limit_per_user_per_hour = 100
+        settings.max_concurrent_clones = 5
+        settings.rate_limit_disabled = False
+        mock_clone.return_value = (_make_fake_repo(tmp_path), FAKE_SHA)
+        mock_queue.enqueue = AsyncMock()
+        try:
+            for confirm in (False, True):
+                resp = client.post("/v1/commands/quick-submit", json={
+                    "repo_url": "https://github.com/test/jarvis-command-test",
+                    "confirm": confirm,
+                })
+                assert resp.status_code == 409
+                assert "belongs to another author" in resp.json()["detail"]
+            mock_queue.enqueue.assert_not_called()
+            cmd = db_session.query(Command).filter(Command.command_name == "test_quick").one()
+            assert cmd.github_repo_url == "https://github.com/original-owner/jarvis-command-test"
+        finally:
+            _teardown_quick_submit_auth()

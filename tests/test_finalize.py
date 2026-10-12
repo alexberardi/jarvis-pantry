@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.models import Author, CommandVersion, Submission
+from app.models import Author, Command, CommandVersion, Submission
 from app.services import finalize as finalize_mod
 from app.services.container_test import ContainerTestResult
 from app.services.finalize import (
@@ -238,3 +238,74 @@ class TestBuildDispatchContext:
             repo_url="https://github.com/test/jarvis-command-widget",
         )
         assert ctx["git_commit_sha"] is None
+
+
+class TestFinalizeNameOwnership:
+    """finalize re-checks ownership: another author may have taken the name
+    while the submission waited in the queue."""
+
+    def _existing(self, db_session, author_id: int) -> Command:
+        cmd = Command(
+            command_name="widget", display_name="Widget", description="d",
+            github_repo_url="https://github.com/original/jarvis-command-widget",
+            author_id=author_id, latest_version="0.9.0",
+        )
+        db_session.add(cmd)
+        db_session.commit()
+        return cmd
+
+    def _finalize(self, db_session, sub):
+        with patch.object(finalize_mod, "resolve_sdk_version", return_value=None):
+            finalize_submission(
+                db=db_session, submission=sub, manifest=_manifest(), review=None,
+                author_github="finalizer", repo_url=sub.github_repo_url,
+                container_result=_passing_result(), git_commit_sha=FAKE_SHA,
+            )
+
+    def test_other_authors_package_is_not_repointed(self, db_session):
+        owner = Author(github_id=1001, github_username="original", display_name="Original")
+        db_session.add(owner)
+        db_session.flush()
+        cmd = self._existing(db_session, owner.id)
+        sub = _seed_submission(db_session)
+        self._finalize(db_session, sub)
+        db_session.refresh(cmd)
+        assert sub.status == "rejected"
+        assert "belongs to another author" in sub.error_message
+        assert cmd.github_repo_url == "https://github.com/original/jarvis-command-widget"
+        assert cmd.latest_version == "0.9.0"
+        assert db_session.query(CommandVersion).filter(CommandVersion.command_id == cmd.id).count() == 0
+
+    def test_owner_publishes_a_new_version(self, db_session):
+        sub = _seed_submission(db_session)
+        cmd = self._existing(db_session, sub.author_id)
+        self._finalize(db_session, sub)
+        db_session.refresh(cmd)
+        assert sub.status == "published"
+        assert cmd.latest_version == "1.0.0"
+        assert cmd.github_repo_url == sub.github_repo_url
+
+    def test_operator_may_publish_any_package(self, db_session):
+        owner = Author(github_id=1001, github_username="original", display_name="Original")
+        operator = Author(github_id=0, github_username=finalize_mod.OPERATOR_GITHUB_USERNAME,
+                          display_name="Pantry Operator")
+        db_session.add_all([owner, operator])
+        db_session.flush()
+        cmd = self._existing(db_session, owner.id)
+        sub = Submission(github_repo_url="https://github.com/original/jarvis-command-widget",
+                         author_id=operator.id, status="container_test")
+        db_session.add(sub)
+        db_session.commit()
+        self._finalize(db_session, sub)
+        assert sub.status == "published"
+        assert cmd.author_id == owner.id  # authorship unchanged
+
+    def test_a_github_user_named_like_the_operator_is_not_the_operator(self, db_session):
+        owner = Author(github_id=1001, github_username="original", display_name="Original")
+        impostor = Author(github_id=5555, github_username=finalize_mod.OPERATOR_GITHUB_USERNAME,
+                          display_name="x")
+        db_session.add_all([owner, impostor])
+        db_session.flush()
+        self._existing(db_session, owner.id)
+        assert not finalize_mod.may_publish_to(
+            db_session, db_session.query(Command).filter(Command.command_name == "widget").one(), impostor.id)

@@ -16,6 +16,7 @@ from ..config import get_settings
 from ..db import get_db
 from ..models import Author, Command, CommandVersion, Submission
 from ..rate_limiter import RateLimiter, _submission_cap_per_hour
+from ..services.finalize import may_publish_to
 from ..services.github_service import (
     RepoValidationError,
     clone_repo,
@@ -417,6 +418,13 @@ async def quick_submit(
         manifest = validate_structure(repo_dir)
         command_name = manifest["name"]
         version = manifest.get("version", "0.1.0")
+
+        # 2b. A taken name only takes versions from its own author (finalize
+        # re-checks when the submission is published).
+        existing = db.query(Command).filter(Command.command_name == command_name).first()
+        if not may_publish_to(db, existing, author.id):
+            cleanup_repo(repo_dir)
+            raise HTTPException(409, f"Package name '{command_name}' belongs to another author")
 
         # 3. Static analysis (sync, fast)
         analysis = run_static_analysis(repo_dir)
