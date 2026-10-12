@@ -33,7 +33,8 @@ services:
     environment:
       PANTRY_PORT: "7721"
       DATABASE_URL: postgresql://pantry:${PANTRY_DB_PASSWORD}@pantry-db:5432/jarvis_pantry
-      ADMIN_API_KEY: ${PANTRY_ADMIN_API_KEY:-}
+      # Required: changing the local LLM server and adding private packages refuse to run without it.
+      ADMIN_API_KEY: ${PANTRY_ADMIN_API_KEY:?set PANTRY_ADMIN_API_KEY in .env.local}
       # Master switch for the Settings page, local models and /v1/forge/local-llm. Off (or unset) hides all of it
       # and the Pantry behaves as upstream.
       FORGE_LOCAL_LLM_ENABLED: ${FORGE_LOCAL_LLM_ENABLED:-true}

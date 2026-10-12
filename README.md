@@ -70,8 +70,13 @@ upstream.
 The address is normalised on save (whitespace, a trailing `/` and a trailing `/v1` are stripped; it must be `http://` or
 `https://`).
 
-**How a model is found.** The Pantry calls `GET {server}/v1/models` and lists what it reports. The list is cached for 30
-seconds, and an unreachable server yields an empty list rather than an error, so the Forge still loads.
+**How a model is found.** An administrator's **Detect models** (or Save) calls `GET {server}/v1/models` and the Pantry
+stores the list it reports. `GET /v1/forge/models` serves that stored list, so an unauthenticated request never makes the
+Pantry connect to the saved server. An unreachable server leaves an empty list rather than an error, so the Forge still
+loads. If the server is configured only by environment variables, press **Detect models** once to fill the list.
+
+**Keys and addresses.** The saved API key is only ever sent to the saved address. Probing a different address with
+`detect` uses the key in that request (or none), never the saved one.
 
 **How it generates.**
 
@@ -145,6 +150,15 @@ Re-running it with a new `ref` publishes a new version of the same package.
 **What it does not do.** There is **no AI security review and no container test**, because nodes install whatever you
 add. So it **refuses to run unless `ADMIN_API_KEY` is set** (403), and answers 401 for a missing or wrong `X-Admin-Key`.
 
+**It never replaces a reviewed package.** If a package with that name already exists and was not added through this
+endpoint (a public submission, for example), the request is refused with 409 rather than repointing it at your
+repository; rename the package in the manifest, or unpublish the existing one first.
+
+**"Private" means unreviewed and local, not secret.** A package added this way is listed, shown and downloadable through
+the same public routes as every other package on this Pantry (`"source": "local"`). Keep the Pantry on a network where that
+is acceptable, or put an access-controlled proxy in front of it. Marking a package as not-public per request is not
+implemented.
+
 **Private GitHub repositories.** A token is read from the request body (`token`) or `PANTRY_GITHUB_TOKEN`. It is embedded in
 the clone URL for the clone only, never stored, and scrubbed from any error text. A node installing a private repository
 needs its own access to it.
@@ -164,12 +178,14 @@ feature:
 
 | Endpoint | With no key set | With a key set |
 |---|---|---|
-| Local LLM `PUT` and `detect` | open to anyone who can reach the port | needs the key |
+| Local LLM `PUT` and `detect` | **refused** (403) | needs the key |
 | `POST /v1/admin/commands/from-repo` and `DELETE …/local` | **refused** (403) | needs the key |
 | Existing moderation endpoints (`verify`, `unpublish`, bulk) | as upstream | as upstream |
 
-With none set, anyone on the network can change the saved LLM server, and the server fetches whatever address is saved, so
-**do not expose the API to untrusted clients**. Rotate the key by changing the variable and restarting.
+The endpoints that change what nodes install or where the Pantry sends requests never run on an open Pantry: no key
+configured answers 403, a wrong or missing key 401 (constant-time comparison). The Pantry connects to the saved LLM
+server (and only the saved server ever receives the saved API key), so keep the API off untrusted networks all the same.
+Rotate the key by changing the variable and restarting.
 
 ## Run it locally with your own LLM server
 

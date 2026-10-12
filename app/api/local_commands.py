@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..db import get_db
+from .admin_key import require_admin_key
 from ..models import Author, Command, CommandVersion
 from ..services.github_service import RepoValidationError, clone_repo, validate_structure
 
@@ -32,12 +33,7 @@ class AddFromRepoRequest(BaseModel):
 
 
 def _require_admin(x_admin_key: str | None) -> None:
-    from ..config import get_settings
-    expected = getattr(get_settings(), "admin_api_key", "")
-    if not expected:
-        raise HTTPException(403, "Adding packages from a repository needs ADMIN_API_KEY to be set on this Pantry")
-    if x_admin_key != expected:
-        raise HTTPException(401, "Admin key required")
+    require_admin_key(x_admin_key, "Adding packages from a repository")
 
 
 def _clone_url(repo_url: str, token: str) -> str:
@@ -90,6 +86,14 @@ def add_from_repo(
         db.flush()
 
     command = db.query(Command).filter(Command.command_name == name).first()
+    if command is not None and (not command.author or command.author.github_username != LOCAL_AUTHOR):
+        # Never repoint a package that came through the public submission pipeline at a repository added here:
+        # it would silently replace reviewed code (and keep its author, verified badge and install count).
+        raise HTTPException(
+            409,
+            f"A package named '{name}' already exists and was not added from a repository, so it is not replaced. "
+            "Rename the package in the manifest, or unpublish the existing one first.",
+        )
     if command is None:
         command = Command(command_name=name, author_id=author.id, install_count=0)
         db.add(command)

@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..db import get_db
+from .admin_key import require_admin_key
 from ..services import local_llm
 
 from ..rate_limiter import RateLimiter, _forge_generate_cap_per_hour
@@ -51,7 +52,7 @@ def get_forge_models(db: Session = Depends(get_db)):
     from ..services.llm_client import get_available_models
     cfg = local_llm.get_config(db)
     return {"models": get_available_models(
-        local_models=local_llm.list_models_cached(cfg),
+        local_models=local_llm.get_stored_models(db),
         local_default=cfg.default_model,
     )}
 
@@ -73,16 +74,15 @@ def get_forge_features():
         "local_llm": local_llm.is_enabled(),
         # Adding a package from a repository only works when an admin key is configured.
         "private_packages": bool(getattr(settings, "admin_api_key", "")),
+        # Saving or probing the local LLM server needs the same key.
+        "admin_key_configured": bool(getattr(settings, "admin_api_key", "")),
         "upstream_mirror": bool(getattr(settings, "pantry_upstream_url", "")),
     }
 
 
 def _require_admin(x_admin_key: str | None) -> None:
-    """When ADMIN_API_KEY is set, settings changes and server probes need it. Unset means an open, trusted LAN."""
-    from ..config import get_settings
-    expected = getattr(get_settings(), "admin_api_key", "")
-    if expected and x_admin_key != expected:
-        raise HTTPException(401, "Admin key required")
+    """Changing the saved server and probing a server both need the admin key, always."""
+    require_admin_key(x_admin_key, "Changing or probing the local LLM server")
 
 
 class LocalLLMSettingsRequest(BaseModel):
@@ -125,6 +125,12 @@ def put_local_llm_settings(
         cfg = local_llm.save_config(db, body.base_url, body.api_key, body.default_model)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    # Refresh the model list the public endpoint serves, so a new server shows its models without another step.
+    # An unreachable server just leaves an empty list.
+    try:
+        local_llm.store_models(db, local_llm.detect_models(cfg.base_url, cfg.api_key))
+    except (local_llm.LocalLLMError, ValueError):
+        local_llm.store_models(db, [])
     return _settings_view(cfg)
 
 
@@ -134,17 +140,31 @@ def detect_local_llm_models(
     x_admin_key: str | None = Header(None, alias="X-Admin-Key"),
     db: Session = Depends(get_db),
 ):
-    """Ask the server which models it serves. Tests the supplied URL and key, or the saved ones when omitted."""
+    """Ask a server which models it serves.
+
+    Tests the supplied address and key, or the saved ones when omitted. The saved API key is only ever sent to
+    the saved address: a different address is probed with the key supplied in the request (or none).
+    """
     _require_enabled()
     _require_admin(x_admin_key)
     body = body or LocalLLMDetectRequest()
     saved = local_llm.get_config(db)
-    base_url = body.base_url if body.base_url is not None else saved.base_url
-    api_key = body.api_key if body.api_key is not None else saved.api_key
+    try:
+        supplied = local_llm.normalise_base_url(body.base_url) if body.base_url is not None else None
+    except ValueError as e:
+        return {"ok": False, "error": str(e), "models": []}
+    is_saved_server = supplied is None or supplied == saved.base_url
+    base_url = saved.base_url if is_saved_server else supplied
+    if is_saved_server:
+        api_key = body.api_key if body.api_key is not None else saved.api_key
+    else:
+        api_key = body.api_key or ""
     try:
         models = local_llm.detect_models(base_url, api_key)
     except (local_llm.LocalLLMError, ValueError) as e:
         return {"ok": False, "error": str(e), "models": []}
+    if is_saved_server:
+        local_llm.store_models(db, models)
     return {"ok": True, "models": models, "default_model": saved.default_model}
 
 
@@ -195,7 +215,7 @@ async def generate_package(body: ForgeGenerateRequest, request: Request, db: Ses
             model_id=body.model,
             conversation_history=body.conversation_history,
             local_config=local_cfg,
-            local_models=local_llm.list_models_cached(local_cfg),
+            local_models=local_llm.get_stored_models(db),
         )
     except ValueError as e:
         raise HTTPException(400, str(e))

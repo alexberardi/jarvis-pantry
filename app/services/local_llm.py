@@ -7,8 +7,8 @@ sets them behaves as before. The model list comes from the server's ``/v1/models
 
 from __future__ import annotations
 
+import json
 import os
-import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -21,9 +21,8 @@ from ..models import AppSetting
 KEY_BASE_URL = "local_llm.base_url"
 KEY_API_KEY = "local_llm.api_key"
 KEY_DEFAULT_MODEL = "local_llm.default_model"
+KEY_MODELS = "local_llm.models"
 
-_MODELS_TTL_SECONDS = 30.0
-_models_cache: dict[tuple[str, str], tuple[float, list[str]]] = {}
 
 
 class LocalLLMError(RuntimeError):
@@ -107,7 +106,6 @@ def save_config(db: Session, base_url: str, api_key: str | None, default_model: 
     if default_model is not None:
         _set(db, KEY_DEFAULT_MODEL, default_model.strip())
     db.commit()
-    _models_cache.clear()
     return get_config(db)
 
 
@@ -133,18 +131,22 @@ def detect_models(base_url: str, api_key: str = "", timeout: float = 8.0) -> lis
     return sorted(set(ids), key=str.lower)
 
 
-def list_models_cached(cfg: LocalLLMConfig) -> list[str]:
-    """Model ids for the configured server, cached briefly. Returns [] when unreachable or not configured."""
-    if not cfg.configured:
+def get_stored_models(db: Session) -> list[str]:
+    """Model ids from the last successful detection (an administrator action). Never calls the server.
+
+    The public ``GET /v1/forge/models`` reads this, so an unauthenticated request cannot make the Pantry connect
+    to the saved server.
+    """
+    if not is_enabled():
         return []
-    cache_key = (cfg.base_url, cfg.api_key)
-    hit = _models_cache.get(cache_key)
-    now = time.monotonic()
-    if hit and now - hit[0] < _MODELS_TTL_SECONDS:
-        return hit[1]
+    raw = _get(db, KEY_MODELS)
     try:
-        models = detect_models(cfg.base_url, cfg.api_key, timeout=4.0)
-    except LocalLLMError:
-        models = []
-    _models_cache[cache_key] = (now, models)
-    return models
+        value = json.loads(raw) if raw else []
+    except ValueError:
+        return []
+    return [m for m in value if isinstance(m, str)]
+
+
+def store_models(db: Session, models: list[str]) -> None:
+    _set(db, KEY_MODELS, json.dumps(models))
+    db.commit()

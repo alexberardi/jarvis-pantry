@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -99,7 +100,7 @@ def get_detail(command_name: str, suffix: str = "") -> dict[str, Any] | None:
     if hit and now - hit[0] < _ttl():
         return hit[1]
     try:
-        status, body = _get_json(f"/v1/commands/{command_name}{suffix}")
+        status, body = _get_json(f"/v1/commands/{quote(command_name, safe='')}{suffix}")
     except UpstreamError as e:
         logger.warning("Upstream lookup of %s failed: %s", command_name, e)
         return hit[1] if hit else None
@@ -118,7 +119,7 @@ def get_detail(command_name: str, suffix: str = "") -> dict[str, Any] | None:
 def get_download(command_name: str, version: str | None) -> tuple[int, Any]:
     """Pass a download lookup through to the upstream. Not cached: it counts an install there."""
     params = {"version": version} if version else None
-    return _get_json(f"/v1/commands/{command_name}/download", params)
+    return _get_json(f"/v1/commands/{quote(command_name, safe='')}/download", params)
 
 
 def filter_summaries(

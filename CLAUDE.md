@@ -236,16 +236,16 @@ Pantry is single-tenant by design — no household scoping. To run a private sto
 | DELETE | `/v1/commands/{name}` | GitHub | Owner-only |
 | GET | `/v1/categories` | rate-limit | Category list |
 | GET | `/v1/forge/models` | — | Available LLM models + costs (detected local models first when enabled) |
-| GET | `/v1/forge/features` | — | Which optional features are on: `local_llm`, `private_packages`, `upstream_mirror` |
+| GET | `/v1/forge/features` | — | Which optional features are on: `local_llm`, `private_packages`, `upstream_mirror`, `admin_key_configured` |
 | GET | `/v1/forge/local-llm` | — | Saved local server settings (never the key). 404 unless `FORGE_LOCAL_LLM_ENABLED` |
-| PUT | `/v1/forge/local-llm` | X-Admin-Key when set | Save base URL, key and default model |
-| POST | `/v1/forge/local-llm/detect` | X-Admin-Key when set | List the models the server reports (`/v1/models`) |
+| PUT | `/v1/forge/local-llm` | X-Admin-Key (required) | Save base URL, key and default model; refreshes the stored model list |
+| POST | `/v1/forge/local-llm/detect` | X-Admin-Key (required) | List the models a server reports (`/v1/models`); the saved key is only sent to the saved server |
 | GET | `/v1/forge/spec` | — | Auto-generated SDK authoring spec |
 | POST | `/v1/forge/generate` | — (BYOK) | LLM generates package files |
 | POST | `/v1/forge/create-repo` | GitHub | Creates repo + pushes files |
 | POST | `/v1/admin/commands/{name}/verify` | X-Admin-Key | Verified badge |
 | POST | `/v1/admin/commands/{name}/unpublish` | X-Admin-Key | Soft-delete |
-| POST | `/v1/admin/commands/from-repo` | X-Admin-Key (required) | Publish a private package from a Git repository, no AI review or container test |
+| POST | `/v1/admin/commands/from-repo` | X-Admin-Key (required) | Publish a package from a Git repository (unreviewed, local, listed publicly); 409 if the name belongs to a package not added this way |
 | DELETE | `/v1/admin/commands/{name}/local` | X-Admin-Key (required) | Unpublish a package added from a repository |
 | GET | `/v1/routines/*` | — | Pre-built routine catalog (separate flow) |
 

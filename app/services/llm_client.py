@@ -287,7 +287,8 @@ async def call_local(
         )
 
     if resp.status_code != 200:
-        raise RuntimeError(f"Local LLM error: {resp.status_code} — {resp.text}")
+        # The body is not returned: it can carry whatever the server wants to say, including echoed credentials.
+        raise RuntimeError(f"Local LLM server answered HTTP {resp.status_code}")
 
     text = resp.json()["choices"][0]["message"]["content"] or ""
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()

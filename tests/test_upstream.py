@@ -190,3 +190,72 @@ def test_add_from_repo_publishes_and_lists_as_local(client, admin, mirror, tmp_p
 def test_add_from_repo_rejects_non_https(client, admin):
     r = client.post("/v1/admin/commands/from-repo", json={"github_repo_url": "git@github.com:me/x.git"}, headers=admin)
     assert r.status_code == 400
+
+
+def test_add_from_repo_refuses_to_replace_a_package_that_is_not_local(client, seed_data, admin, tmp_path, monkeypatch):
+    """A reviewed public package must not be repointed at an administrator's repository."""
+    from app.models import Command
+
+    def fake_clone(url, ref=None):
+        # The manifest names the existing public package.
+        return _repo(tmp_path, name="get_stock_price"), "cafe" * 10
+
+    monkeypatch.setattr("app.api.local_commands.clone_repo", fake_clone)
+    r = client.post("/v1/admin/commands/from-repo",
+                    json={"github_repo_url": "https://github.com/me/evil-stock"}, headers=admin)
+    assert r.status_code == 409 and "not replaced" in r.json()["detail"]
+    row = client.get("/v1/commands/get_stock_price").json()
+    assert row["github_repo_url"] == "https://github.com/testuser/jarvis-command-stock-price"
+    assert row["author"]["github"] == "testuser"
+
+
+def test_add_from_repo_can_update_a_package_it_added(client, admin, tmp_path, monkeypatch):
+    monkeypatch.setattr("app.api.local_commands.clone_repo", lambda url, ref=None: (_repo(tmp_path), "ab" * 20))
+    body = {"github_repo_url": "https://github.com/me/jarvis-cmd-private"}
+    assert client.post("/v1/admin/commands/from-repo", json=body, headers=admin).status_code == 200
+    again = client.post("/v1/admin/commands/from-repo", json=body, headers=admin)
+    assert again.status_code == 200 and again.json()["command_name"] == "my_private"
+
+
+def test_upstream_path_segments_are_quoted(monkeypatch):
+    from app.services import upstream
+
+    seen = []
+    monkeypatch.setenv("PANTRY_UPSTREAM_URL", "https://public.example")
+    from app import config
+    config.get_settings.cache_clear()
+    upstream.clear_cache()
+    monkeypatch.setattr(upstream, "_get_json", lambda path, params=None: (seen.append(path), (404, None))[1])
+    upstream.get_detail("../admin/secret")
+    upstream.get_download("a/b?c=d", None)
+    assert seen == ["/v1/commands/..%2Fadmin%2Fsecret", "/v1/commands/a%2Fb%3Fc%3Dd/download"]
+    monkeypatch.delenv("PANTRY_UPSTREAM_URL")
+    config.get_settings.cache_clear()
+    upstream.clear_cache()
+
+
+def test_local_llm_error_body_is_not_echoed(monkeypatch):
+    import asyncio
+
+    import httpx
+
+    from app.services import llm_client
+
+    class Resp:
+        status_code = 500
+        text = "internal detail with sk-SECRET-token"
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            return Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: FakeClient())
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(llm_client.call_local("sys", [], "k", "m", 10, "http://srv"))
+    assert "sk-SECRET" not in str(exc.value) and "HTTP 500" in str(exc.value)
