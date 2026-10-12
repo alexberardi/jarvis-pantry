@@ -84,7 +84,7 @@ Port: **7721** (older docs say 7720 — outdated; `PANTRY_PORT` default is 7721)
 ## Dependency graph
 
 **Upstream (pantry depends on):**
-- **PostgreSQL** (required) — six tables (authors, commands, command_versions, security_reports, reviews, submissions)
+- **PostgreSQL** (required) — seven tables (authors, commands, command_versions, security_reports, reviews, submissions, app_settings)
 - **GitHub API** (required for OAuth + repo clone/validation in the submission pipeline; degrades gracefully for browse/download)
 - **Docker daemon** (required for `container_test.py`) — runs sandboxed validation containers
 - **Claude / OpenAI API** (caller-side BYOK) — submitters/forge users provide their own API key per request; pantry never stores it
@@ -235,17 +235,23 @@ Pantry is single-tenant by design — no household scoping. To run a private sto
 | POST | `/v1/commands/{name}/reviews` | GitHub | Upsert (one per author) |
 | DELETE | `/v1/commands/{name}` | GitHub | Owner-only |
 | GET | `/v1/categories` | rate-limit | Category list |
-| GET | `/v1/forge/models` | — | Available LLM models + costs |
+| GET | `/v1/forge/models` | — | Available LLM models + costs (detected local models first when enabled) |
+| GET | `/v1/forge/features` | — | Which optional features are on: `local_llm`, `private_packages`, `upstream_mirror`, `admin_key_configured` |
+| GET | `/v1/forge/local-llm` | — | Saved local server settings (never the key). 404 unless `FORGE_LOCAL_LLM_ENABLED` |
+| PUT | `/v1/forge/local-llm` | X-Admin-Key (required) | Save base URL, key and default model; refreshes the stored model list |
+| POST | `/v1/forge/local-llm/detect` | X-Admin-Key (required) | List the models a server reports (`/v1/models`); the saved key is only sent to the saved server |
 | GET | `/v1/forge/spec` | — | Auto-generated SDK authoring spec |
 | POST | `/v1/forge/generate` | — (BYOK) | LLM generates package files |
 | POST | `/v1/forge/create-repo` | GitHub | Creates repo + pushes files |
 | POST | `/v1/admin/commands/{name}/verify` | X-Admin-Key | Verified badge |
 | POST | `/v1/admin/commands/{name}/unpublish` | X-Admin-Key | Soft-delete |
+| POST | `/v1/admin/commands/from-repo` | X-Admin-Key (required) | Publish a package from a Git repository (unreviewed, local, listed publicly); 409 if the name belongs to a package not added this way |
+| DELETE | `/v1/admin/commands/{name}/local` | X-Admin-Key (required) | Unpublish a package added from a repository |
 | GET | `/v1/routines/*` | — | Pre-built routine catalog (separate flow) |
 
 ---
 
-## Data model (six tables)
+## Data model (seven tables)
 
 | Table | Purpose |
 |---|---|
@@ -285,8 +291,14 @@ Required files in **every** package: manifest (`jarvis_command.yaml` or `jarvis_
 | `GITHUB_CLIENT_SECRET` | yes | — | OAuth |
 | `ADMIN_API_KEY` | yes | — | Admin endpoints |
 | `ALERT_WEBHOOK_URL` | optional | — | Slack/Discord webhook for abuse alerts |
+| `FORGE_LOCAL_LLM_ENABLED` | optional | `false` | Master switch for the local LLM features (Settings, `local:` models) |
+| `FORGE_LOCAL_BASE_URL` / `FORGE_LOCAL_API_KEY` / `FORGE_LOCAL_MODEL` | optional | — | First-run defaults for the local server; the saved settings win |
+| `FORGE_LOCAL_TIMEOUT` / `FORGE_LOCAL_MAX_TOKENS` | optional | `900` / `8192` | Read timeout (seconds) and output cap for local models |
+| `PANTRY_UPSTREAM_URL` | optional | — | Public Pantry API to list next to local packages; empty = off |
+| `PANTRY_UPSTREAM_TTL_SECONDS` / `PANTRY_UPSTREAM_TIMEOUT_SECONDS` | optional | `300` / `8` | Cache lifetime and request timeout for the mirror |
+| `PANTRY_GITHUB_TOKEN` | optional | — | Clone token for private repositories when adding a package; never stored |
 
-No settings DB — config is env-only (cloud service, not multi-tenant per-host).
+Config is env-only, with one exception: the local LLM server (address, key, default model) is editable at runtime and stored in the `app_settings` table, with the `FORGE_LOCAL_*` variables as the first-run fallback.
 
 ---
 
@@ -297,7 +309,7 @@ app/
 ├── main.py                    # FastAPI factory, CORS, routers
 ├── config.py                  # Pydantic Settings
 ├── db.py                      # SQLAlchemy session
-├── models.py                  # 6 tables
+├── models.py                  # 7 tables
 ├── auth.py                    # GitHub OAuth + admin key check
 ├── rate_limiter.py            # In-memory IP rate limit
 ├── api/
@@ -307,7 +319,8 @@ app/
 │   ├── submit.py              # POST .../quick-submit
 │   ├── reviews.py             # /v1/commands/{name}/reviews
 │   ├── manage.py              # GitHub OAuth flow + delete
-│   ├── forge.py               # /v1/forge/*
+│   ├── forge.py               # /v1/forge/* (incl. local LLM settings, features)
+│   ├── local_commands.py      # POST .../from-repo, DELETE .../local (private packages)
 │   └── routines.py            # Pre-built routine catalog
 └── services/
     ├── github_service.py      # Clone, validate, parse manifest
@@ -315,6 +328,9 @@ app/
     ├── security_review.py     # BYOK AI review (Claude/OpenAI)
     ├── container_test.py      # Sandboxed validation runner
     ├── forge_generator.py     # LLM package generation
+    ├── llm_client.py          # Hosted + local (`local:<model>`) LLM calls
+    ├── local_llm.py           # Local server settings + model detection
+    ├── upstream.py            # Cached mirror of a public Pantry catalogue
     ├── job_queue.py           # Async pipeline queue
     └── submission_pipeline.py # Orchestrates the validation stages
 alembic/                       # Migrations

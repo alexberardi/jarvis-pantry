@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from ..db import get_db
 from ..models import Command, CommandVersion
 from ..rate_limiter import rate_limiter
+from ..services import upstream
 
 router = APIRouter()
 
@@ -32,6 +33,16 @@ def download_command(
     ).first()
 
     if not cmd:
+        if upstream.is_enabled():
+            # Not a private package: let the public Pantry answer (it counts the install there).
+            try:
+                status, body = upstream.get_download(command_name, version)
+            except upstream.UpstreamError as e:
+                raise HTTPException(502, str(e))
+            if status == 200 and isinstance(body, dict):
+                return body
+            if status not in (404, 200):
+                raise HTTPException(502, f"Upstream answered HTTP {status}")
         raise HTTPException(404, f"Command '{command_name}' not found")
 
     # Get specific or latest version

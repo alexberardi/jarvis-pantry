@@ -124,6 +124,7 @@ def resolve_author(db: Session, user_data: dict) -> "Author":
 
     pre_oauth = db.query(Author).filter(
         Author.github_username == login, Author.github_id == 0,
+        Author.is_local.is_(False),  # defence in depth: the local author is not a GitHub account
     ).first()
     if pre_oauth and login.casefold() not in RESERVED_USERNAMES:
         pre_oauth.github_id = github_id

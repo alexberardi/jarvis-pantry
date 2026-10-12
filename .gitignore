@@ -9,3 +9,4 @@ build/
 .env
 !.env.example
 jarvis-command-sdk/
+.env.local

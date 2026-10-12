@@ -7,6 +7,8 @@ routine generator, and other AI-powered features.
 from __future__ import annotations
 
 import logging
+import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,7 +26,7 @@ class ModelConfig:
 
     id: str                   # Internal ID used by the frontend
     display_name: str         # Shown in the dropdown
-    provider: str             # "anthropic" or "openai"
+    provider: str             # "anthropic", "openai" or "local" (an OpenAI-compatible server set in the Forge settings)
     api_model: str            # Model ID sent to the API
     input_price: float        # $ per 1M input tokens
     output_price: float       # $ per 1M output tokens
@@ -85,17 +87,60 @@ LLM_MODELS: dict[str, ModelConfig] = {
 }
 
 
+LOCAL_PREFIX = "local:"
+
+
+def local_model_config(model_name: str, max_tokens: int | None = None) -> ModelConfig:
+    """ModelConfig for one model served by the configured local server."""
+    return ModelConfig(
+        id=f"{LOCAL_PREFIX}{model_name}",
+        display_name=f"{model_name} (local)",
+        provider="local",
+        api_model=model_name,
+        input_price=0.0,
+        output_price=0.0,
+        max_tokens=max_tokens or int(os.environ.get("FORGE_LOCAL_MAX_TOKENS", "8192")),
+    )
+
+
+def resolve_local_model(model_id: str, default_model: str = "", detected: list[str] | None = None) -> ModelConfig | None:
+    """Map ``local:<model>`` (or the bare ``local``, kept for older clients) to a ModelConfig, else None."""
+    if model_id.startswith(LOCAL_PREFIX) and len(model_id) > len(LOCAL_PREFIX):
+        return local_model_config(model_id[len(LOCAL_PREFIX):])
+    if model_id == "local":
+        name = default_model or (detected[0] if detected else "")
+        return local_model_config(name) if name else None
+    return None
+
+
 def get_available_models(
     prompt_overhead_tokens: int = 7000,
     output_tokens: int = 6000,
+    local_models: list[str] | None = None,
+    local_default: str = "",
 ) -> list[dict[str, Any]]:
     """Return model list with estimated per-generation costs.
+
+    Models detected on the local server come first (default model at the top) and cost nothing.
 
     Args:
         prompt_overhead_tokens: Approximate input tokens for cost estimation.
         output_tokens: Approximate output tokens for cost estimation.
+        local_models: Model ids reported by the local server's /v1/models.
+        local_default: Which of them to mark as the default.
     """
     models: list[dict[str, Any]] = []
+    ordered = sorted(local_models or [], key=lambda m: (m != local_default, m.lower()))
+    for name in ordered:
+        cfg = local_model_config(name)
+        models.append({
+            "id": cfg.id,
+            "display_name": cfg.display_name,
+            "provider": "local",
+            "estimated_cost": "free",
+            "estimated_cost_usd": 0.0,
+            "default": name == local_default,
+        })
     for model in LLM_MODELS.values():
         input_cost = (prompt_overhead_tokens / 1_000_000) * model.input_price
         output_cost = (output_tokens / 1_000_000) * model.output_price
@@ -213,3 +258,40 @@ async def call_openai_responses(
                 if content.get("type") == "output_text":
                     return content["text"]
     raise RuntimeError("No text content in OpenAI Responses API output")
+
+
+async def call_local(
+    system_prompt: str,
+    messages: list[dict[str, str]],
+    api_key: str,
+    model: str,
+    max_tokens: int,
+    base_url: str,
+) -> str:
+    """Call a local OpenAI-compatible chat server.
+
+    Local models are slower than hosted ones and some return their reasoning inline, so the timeout is long
+    (``FORGE_LOCAL_TIMEOUT``, default 900 s) and any <think> block is removed before the reply reaches the parser.
+    """
+    local_messages = [{"role": "system", "content": system_prompt}] + messages
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{base_url.rstrip('/')}/v1/chat/completions",
+            headers=headers,
+            json={"model": model, "max_tokens": max_tokens, "messages": local_messages},
+            timeout=float(os.environ.get("FORGE_LOCAL_TIMEOUT", "900")),
+        )
+
+    if resp.status_code != 200:
+        # The body is not returned: it can carry whatever the server wants to say, including echoed credentials.
+        raise RuntimeError(f"Local LLM server answered HTTP {resp.status_code}")
+
+    try:
+        text = resp.json()["choices"][0]["message"]["content"] or ""
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise RuntimeError("Local LLM server returned a reply that is not an OpenAI chat completion")
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
