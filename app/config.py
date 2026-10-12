@@ -3,7 +3,7 @@
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -50,6 +50,19 @@ class Settings(BaseSettings):
     pantry_runner_ref: str = Field("main", alias="PANTRY_RUNNER_REF")
     pantry_callback_base_url: str = Field("", alias="PANTRY_CALLBACK_BASE_URL")
     pantry_callback_signing_key: str = Field("", alias="PANTRY_CALLBACK_SIGNING_KEY")
+
+    @field_validator("database_url")
+    @classmethod
+    def _pin_psycopg2(cls, url: str) -> str:
+        """Name the psycopg2 driver on a bare postgres(ql):// URL.
+
+        SQLAlchemy 2.1 made psycopg (v3) the default driver for postgresql://,
+        and only psycopg2 is installed. URLs that name a driver are left alone.
+        """
+        for prefix in ("postgresql://", "postgres://"):
+            if url.startswith(prefix):
+                return "postgresql+psycopg2://" + url[len(prefix):]
+        return url
 
     model_config = SettingsConfigDict(
         env_file=".env",
