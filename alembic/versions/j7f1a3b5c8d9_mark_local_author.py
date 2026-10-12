@@ -32,5 +32,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("UPDATE authors SET github_username = 'local' WHERE is_local = true AND github_username = '_local'")
+    # Only rename back when no other author has taken "local" since (it is unique), so the downgrade cannot fail.
+    op.execute(
+        "UPDATE authors SET github_username = 'local' WHERE is_local = true AND github_username = '_local' "
+        "AND NOT EXISTS (SELECT 1 FROM authors a WHERE a.github_username = 'local')"
+    )
     op.drop_column("authors", "is_local")

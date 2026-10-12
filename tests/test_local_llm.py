@@ -178,6 +178,7 @@ def test_server_address_is_only_shown_with_the_admin_key(client, monkeypatch):
 
 
 def test_a_key_supplied_by_the_caller_never_reaches_the_local_server(client, monkeypatch):
+    pytest.importorskip("jarvis_command_sdk")  # forge_generator imports the SDK, which is not in the dev extras
     monkeypatch.setattr(httpx, "get", _fake_get(["qwen-9b"]))
     client.put("/v1/forge/local-llm", json={"base_url": "http://srv:8080", "api_key": "srvkey"}, headers=ADMIN)
     seen = {}

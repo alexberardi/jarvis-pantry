@@ -87,10 +87,14 @@ def list_commands() -> list[dict[str, Any]]:
         return hit[1]
     try:
         items: list[dict[str, Any]] = []
+        total_bytes = 0  # the per-request cap in _get_json is per page, so the catalogue as a whole is capped here
         for page in range(1, _MAX_PAGES + 1):
             status, body = _get_json("/v1/commands", {"page": page, "per_page": _PAGE_SIZE})
             if status != 200 or not isinstance(body, dict):
                 raise UpstreamError(f"Upstream answered HTTP {status} for the package list")
+            total_bytes += len(json.dumps(body))
+            if total_bytes > _MAX_RESPONSE_BYTES:
+                raise UpstreamError("The upstream package list was larger than the allowed size")
             batch = body.get("commands") or []
             items.extend(batch)
             if not batch or len(items) >= int(body.get("total", len(items))):

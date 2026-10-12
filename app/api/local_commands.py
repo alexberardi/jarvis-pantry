@@ -86,6 +86,9 @@ def add_from_repo(
         db.flush()
 
     command = db.query(Command).filter(Command.command_name == name).first()
+    # This route is administrator-only, so it deliberately does not go through may_publish_to(): the administrator may
+    # update any package this route created. The check below enforces the same rule from the other side, refusing to
+    # touch a package that is not owned by the local author.
     if command is not None and not (command.author and command.author.is_local):
         # Never repoint a package that came through the public submission pipeline at a repository added here:
         # it would silently replace reviewed code (and keep its author, verified badge and install count).

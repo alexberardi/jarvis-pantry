@@ -363,3 +363,23 @@ def test_local_llm_non_json_reply_is_a_clean_error(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: FakeClient())
     with pytest.raises(RuntimeError, match="not an OpenAI chat completion"):
         asyncio.run(llm_client.call_local("sys", [], "", "m", 10, "http://srv"))
+
+
+def test_catalogue_is_capped_across_pages(monkeypatch):
+    from app import config
+    monkeypatch.setenv("PANTRY_UPSTREAM_URL", UP)
+    config.get_settings.cache_clear()
+    upstream.clear_cache()
+    monkeypatch.setattr(upstream, "_MAX_RESPONSE_BYTES", 10_000)
+    page_item = {"command_name": "x", "description": "y" * 3000}
+
+    def fake_get_json(path, params=None):
+        return 200, {"commands": [dict(page_item)], "total": 1000, "page": params["page"]}
+
+    monkeypatch.setattr(upstream, "_get_json", fake_get_json)
+    try:
+        assert upstream.list_commands() == []  # over budget: the catalogue is refused, not buffered
+    finally:
+        monkeypatch.delenv("PANTRY_UPSTREAM_URL", raising=False)
+        config.get_settings.cache_clear()
+        upstream.clear_cache()
