@@ -4,6 +4,13 @@ The community command store ("Pantry") and AI **Forge** for the Jarvis voice ass
 
 Runs on **port 7721**.
 
+> **This is a fork** ([opticon454/jarvis-pantry](https://github.com/opticon454/jarvis-pantry), branch `local-llm-settings`)
+> of [alexberardi/jarvis-pantry](https://github.com/alexberardi/jarvis-pantry). It adds three things for running your own
+> Pantry on a home network: a Forge that uses a model **on your own hardware**, a catalogue that shows the **public Pantry
+> and your own packages together**, and a way to add **private packages** from a Git repository. All of it is opt-in and
+> off by default, so a deployment that sets none of the variables below behaves exactly like upstream. The matching web
+> interface is [opticon454/jarvis-pantry-web](https://github.com/opticon454/jarvis-pantry-web), same branch.
+
 ## What it does
 
 - **Catalog** — public, browsable store of Jarvis commands (`/` catalog + command detail, search/browse).
@@ -14,55 +21,116 @@ Runs on **port 7721**.
 - **Forge** — AI-assisted command generation plus a validation pipeline: LLM generation, static analysis, security review, lockfile resolution, and sandboxed **container tests** before a submission is accepted (see `app/services/`).
 - **Admin** — bulk management endpoints protected by `ADMIN_API_KEY`.
 
-## Requirements
+## What this fork adds
 
-- Python 3.11+
-- Docker & Docker Compose (recommended)
-- PostgreSQL (`DATABASE_URL`)
+| Feature | Switch | What it does | Needs a key? |
+|---|---|---|---|
+| [Local LLM for the Forge](#local-llm-for-the-forge) | `FORGE_LOCAL_LLM_ENABLED=true` | The Forge generates packages with any OpenAI-compatible server you run (llama-swap, llama.cpp, vLLM, Ollama). Free, and nothing leaves your network. | Only to *change* the settings, and only if `ADMIN_API_KEY` is set |
+| [Upstream mirror](#upstream-mirror) | `PANTRY_UPSTREAM_URL=<public Pantry API>` | One catalogue: your packages first, then the public ones. Nodes need only this address. | No |
+| [Private packages](#private-packages) | `ADMIN_API_KEY` set | Publish a package straight from a Git repository, without GitHub login, AI review or container tests. | Yes, always |
 
-## Run it locally with your own LLM server
+`GET /v1/forge/features` reports which of these are on, and the web interface hides what is off:
+
+```json
+{ "local_llm": true, "private_packages": true, "upstream_mirror": true }
+```
+
+## How it fits together
+
+```
+ Jarvis node ──(command_store_url)──┐
+                                    ▼
+ browser ──▶ jarvis-pantry-web ──▶ jarvis-pantry (:7721) ──▶ PostgreSQL
+              (:7720)                │   │  │
+                                     │   │  └──▶ upstream Pantry   (PANTRY_UPSTREAM_URL, read-only, cached)
+                                     │   └─────▶ GitHub            (clone a repository to add/publish)
+                                     └─────────▶ your LLM server   (/v1/models, /v1/chat/completions)
+```
+
+- A node installs a package by cloning its GitHub repository. The Pantry only **brokers the lookup** (name, versions,
+  repository URL, commit); it never hosts the package contents.
+- Your own packages live in the same tables as public submissions, under a reserved author `local`
+  (`Local (private)`). That is how the list and detail routes can tell them apart (`"source": "local"`).
+- Settings that change at runtime (the local LLM server) live in one table, `app_settings` (migration
+  `i6e0f2a4b7c8`), so they survive restarts and can be edited from the web interface. Environment variables are only the
+  first-run fallback.
+
+## Local LLM for the Forge
 
 The Forge can build packages with a model on your own hardware instead of a paid API.
+
+**Switch.** `FORGE_LOCAL_LLM_ENABLED` (`true` in the local compose file, **off by default** elsewhere). While it is off the
+Settings link is hidden, `/v1/forge/local-llm*` return 404, local models are not listed and the Pantry behaves exactly as
+upstream.
+
+**Where the settings come from.** The database wins; the environment fills only what was never saved:
+
+1. **Saved in the web interface (database).** Server address, API key and default model.
+2. **Environment, first-run only.** `FORGE_LOCAL_BASE_URL`, `FORGE_LOCAL_API_KEY`, `FORGE_LOCAL_MODEL`. A value that was
+   saved as an empty string was cleared on purpose and does not fall back.
+
+The address is normalised on save (whitespace, a trailing `/` and a trailing `/v1` are stripped; it must be `http://` or
+`https://`).
+
+**How a model is found.** The Pantry calls `GET {server}/v1/models` and lists what it reports. The list is cached for 30
+seconds, and an unreachable server yields an empty list rather than an error, so the Forge still loads.
+
+**How it generates.**
+
+- `GET /v1/forge/models` lists the detected models first, the default at the top, each as `local:<model>` with
+  `"provider": "local"`, `"estimated_cost": "free"` and `"default": true` on the chosen one. Hosted models follow.
+- Picking `local:<model>` sends the chat to `{server}/v1/chat/completions` with the saved key as a Bearer token. **No
+  per-request key is needed.** The bare id `local` is accepted for older clients and resolves to the default (or the
+  first detected) model.
+- Replies are read with a long timeout (`FORGE_LOCAL_TIMEOUT`, default 900 s, because local models are slow) and any
+  `<think>…</think>` block is removed before the reply reaches the Forge. `FORGE_LOCAL_MAX_TOKENS` (default 8192) caps
+  the output.
+
+**Using it.**
 
 ```bash
 cp .env.local.example .env.local            # set PANTRY_DB_PASSWORD (and PANTRY_PUBLIC_API_URL on a server)
 docker compose -f docker-compose.local.yaml --env-file .env.local up -d --build
 ```
 
-The local LLM features are behind one switch, `FORGE_LOCAL_LLM_ENABLED` (`true` in the local compose file, **off by
-default** elsewhere). While it is off the Settings link is hidden, `/v1/forge/local-llm*` return 404, local models are not
-listed and the Pantry behaves exactly as upstream; `GET /v1/forge/features` reports the state.
+Open <http://localhost:7720>, go to **Settings**, enter the server's address (and its API key if it has one), press
+**Detect models**, pick a default and save. Over the API:
 
-Open <http://localhost:7720>, go to **Settings**, enter the address of any OpenAI-compatible server (llama-swap,
-llama.cpp `llama-server`, vLLM, Ollama) and its API key if it has one, and press **Detect models**. The models it
-reports (`GET /v1/models`) fill the Forge's model list; pick a default and save. Settings are stored in the database.
+| Method | Path | Admin key | Purpose |
+|---|---|---|---|
+| `GET` | `/v1/forge/features` | no | Which optional features are on |
+| `GET` | `/v1/forge/local-llm` | no | `{base_url, has_api_key, default_model, source}`. The key itself is never returned. |
+| `PUT` | `/v1/forge/local-llm` | when set | Save `{base_url, api_key, default_model}`. `api_key` omitted keeps the stored key; `""` clears it. |
+| `POST` | `/v1/forge/local-llm/detect` | when set | Test the supplied address and key, or the saved ones, and return `{ok, models, error}` |
+| `GET` | `/v1/forge/models` | no | The Forge's model list, local models first |
 
-Also available over the API: `GET/PUT /v1/forge/local-llm`, `POST /v1/forge/local-llm/detect`, and `GET /v1/forge/models`
-(local models first, marked `"default": true`). Set `ADMIN_API_KEY` to require `X-Admin-Key` for changes and probes; with
-none set, anyone who can reach the port can change them, so keep it on a trusted network. The server fetches whatever
-address is saved, so do not expose the API to untrusted clients.
+**Limits.** The compose file mounts no Docker socket, so the sandboxed container tests used when publishing a submission
+are unavailable. Local models are slower and weaker than hosted ones, and the Forge's static checks do not import or run
+the generated code: test what it produces.
 
-The compose file mounts no Docker socket, so the sandboxed container tests used when publishing a submission are
-unavailable. Local models are slower and weaker than hosted ones; the Forge's static checks do not import or run the
-generated code, so test what it produces.
-
-## Public and private packages together (upstream mirror)
+## Upstream mirror
 
 Set `PANTRY_UPSTREAM_URL` (the local compose file defaults it to the public Pantry's API) and this Pantry lists the public
-catalogue **and** its own packages as one store, so nodes need only this address:
+catalogue **and** its own packages as one store, so nodes need only this address. Unset or empty serves only what it holds,
+as upstream does.
 
-- `GET /v1/commands` merges both (your packages first, then public ones; a local name shadows a public one), each item with
-  `"source": "local" | "upstream"`. Search, category and type filters, sorting and pagination apply to the merged list, and
-  `/v1/categories` counts both.
-- `GET /v1/commands/{name}`, `/versions` and `/download` answer locally first and fall back to the public Pantry. Nodes still
-  clone each package from its GitHub repository.
-- The public list is cached for `PANTRY_UPSTREAM_TTL_SECONDS` (300). If the upstream is offline the last copy is served, or
-  just your own packages.
+- `GET /v1/commands` merges both: your packages first, then the public ones; a local name **shadows** a public one. Each
+  item has `"source": "local" | "upstream"`. Search, category and type filters, sorting and pagination apply to the merged
+  list, and `/v1/categories` counts both.
+- `GET /v1/commands/{name}`, `/versions` and `/download` answer locally first and fall back to the public Pantry.
+- The public list is fetched whole (it is small) and filtered here, so both sources behave the same. It is cached for
+  `PANTRY_UPSTREAM_TTL_SECONDS` (default 300), with a request timeout of `PANTRY_UPSTREAM_TIMEOUT_SECONDS` (default 8).
+- **If the upstream is offline** the last good copy is served, or just your own packages if there never was one. A slow or
+  dead upstream never takes the local catalogue down.
+  A *download* of an upstream-only package has no cached copy to fall back on, so it answers **502**.
+- The mirror is read-only: nothing is written upstream, and nothing from it is stored in your database.
 
-Point a node at it with `command_store_url` in its config (for example `http://pantry.lan:7721`).
+Point a node at it with `command_store_url` in its config, for example `http://pantry.lan:7721`.
 
-**Adding a private package.** The public submission flow needs GitHub login and container tests, so for your own
-repositories there is an administrator shortcut:
+## Private packages
+
+The public submission flow needs GitHub login, an AI security review and container tests. For your own repositories there
+is an administrator shortcut:
 
 ```bash
 curl -s -X POST http://pantry.lan:7721/v1/admin/commands/from-repo \
@@ -70,11 +138,67 @@ curl -s -X POST http://pantry.lan:7721/v1/admin/commands/from-repo \
   -d '{"github_repo_url": "https://github.com/you/jarvis-cmd-thing", "ref": "v1.0.0"}'
 ```
 
-It clones the repository, validates the manifest and publishes it as a local package. There is **no AI security review and
-no container test**, and it refuses to run unless `ADMIN_API_KEY` is set, because nodes install what you add. A private
-GitHub repository needs a token, in the request or in `PANTRY_GITHUB_TOKEN` (used for the clone only, never stored or
-returned); a node installing a private repository needs its own access to it. `DELETE
-/v1/admin/commands/{name}/local` unpublishes one. Re-run the POST to publish a new version.
+**What it does.** It clones the repository at `ref` (a tag or branch; the default branch when omitted), validates the
+manifest with the same structure check the public flow uses, and publishes it as a local package under the reserved
+author `local`. The response gives `command_name`, `version`, `package_type` (`command`, or `bundle` for several
+components), `git_commit_sha`, `private_repository` and a `review` field that says in words that none happened.
+Re-running it with a new `ref` publishes a new version of the same package.
+
+**What it does not do.** There is **no AI security review and no container test**, because nodes install whatever you
+add. So it **refuses to run unless `ADMIN_API_KEY` is set** (403), and answers 401 for a missing or wrong `X-Admin-Key`.
+
+**Private GitHub repositories.** A token is read from the request body (`token`) or `PANTRY_GITHUB_TOKEN`. It is embedded in
+the clone URL for the clone only, never stored, and scrubbed from any error text. A node installing a private repository
+needs its own access to it.
+
+**Unpublishing.** `DELETE /v1/admin/commands/{name}/local` (admin key) hides a package; it is not deleted, and only
+packages added this way can be unpublished here (404 otherwise). Publishing the same name again brings it back.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/v1/admin/commands/from-repo` | Add or update a private package `{github_repo_url, ref?, token?}` |
+| `DELETE` | `/v1/admin/commands/{name}/local` | Unpublish a private package |
+
+## The admin key
+
+`ADMIN_API_KEY` is one shared secret sent as the `X-Admin-Key` header, not a login or a JWT. What it gates depends on the
+feature:
+
+| Endpoint | With no key set | With a key set |
+|---|---|---|
+| Local LLM `PUT` and `detect` | open to anyone who can reach the port | needs the key |
+| `POST /v1/admin/commands/from-repo` and `DELETE …/local` | **refused** (403) | needs the key |
+| Existing moderation endpoints (`verify`, `unpublish`, bulk) | as upstream | as upstream |
+
+With none set, anyone on the network can change the saved LLM server, and the server fetches whatever address is saved, so
+**do not expose the API to untrusted clients**. Rotate the key by changing the variable and restarting.
+
+## Run it locally with your own LLM server
+
+`docker-compose.local.yaml` runs everything on one machine:
+
+| Service | Image / build | Port | Notes |
+|---|---|---|---|
+| `pantry-db` | `postgres:16-alpine` | internal | Data in the `pantry-db` volume; health-checked |
+| `pantry` | `Dockerfile.local` | `${PANTRY_PORT:-7721}` | The API; migrations run on start |
+| `pantry-web` | `../jarvis-pantry-web` (`PANTRY_WEB_PATH`) | `${PANTRY_WEB_PORT:-7720}` | The web interface |
+
+`.env.local` (copy `.env.local.example`):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PANTRY_DB_PASSWORD` | required | Database password |
+| `PANTRY_PUBLIC_API_URL` | `http://localhost:7721` | Address the **browser** uses to reach the API. Baked into the web build, so rebuild after changing it. On a server use its LAN address. |
+| `FORGE_LOCAL_LLM_ENABLED` | `true` | Master switch for the local LLM features |
+| `PANTRY_UPSTREAM_URL` | public Pantry API | Catalogue to mirror; blank for your own packages only |
+| `PANTRY_GITHUB_TOKEN` | blank | Clone private GitHub repositories when adding a package |
+| `PANTRY_ADMIN_API_KEY` | blank | Becomes `ADMIN_API_KEY` in the container |
+| `FORGE_LOCAL_BASE_URL` / `_API_KEY` / `_MODEL` | blank | First-run defaults; normally set from Settings |
+
+The compose file sets `BYPASS_LLM_KEY=true` (the Forge needs no per-request key for a local server), a Forge rate limit of
+60 requests per hour (`FORGE_GENERATE_RATE_LIMIT_PER_HOUR`), and `FORGE_LOCAL_TIMEOUT=900`. One code fix rides along:
+SQLAlchemy 2.1 maps a bare `postgresql://` URL to the psycopg v3 driver, so `app/db.py` (and Alembic's `env.py`) rewrite it to
+`postgresql+psycopg2://`, the driver this project installs.
 
 ## Setup & run
 
@@ -97,6 +221,12 @@ The app module is `app.main:app`. The service listens on `${PANTRY_PORT}` (defau
 
 It also deploys to Fly.io (`fly.toml`, `Dockerfile.fly`).
 
+## Requirements
+
+- Python 3.11+
+- Docker & Docker Compose (recommended)
+- PostgreSQL (`DATABASE_URL`)
+
 ## Environment
 
 Copy `.env.example` to `.env`. Key variables:
@@ -105,19 +235,34 @@ Copy `.env.example` to `.env`. Key variables:
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection string |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | GitHub OAuth for author submissions/management |
-| `ADMIN_API_KEY` | Protects admin endpoints |
+| `ADMIN_API_KEY` | Protects admin endpoints; **required** to add private packages |
 | `PANTRY_PORT` | Port to serve on (default 7721) |
 | `ALERT_WEBHOOK_URL` | Optional Slack/Discord webhook for abuse alerting |
 | `BYPASS_LLM_KEY` | Dev: skip the AI-review key requirement |
 | `JARVIS_SDK_PATH` | Path to `jarvis-command-sdk` used by container tests |
 | `CONTAINER_TEST_TIMEOUT` / `MAX_CONCURRENT_CONTAINER_TESTS` / `MAX_CONCURRENT_CLONES` | Forge validation pipeline tuning |
 | `SUBMISSION_RATE_LIMIT_PER_HOUR` / `RATE_LIMIT_DISABLED` | Per-IP submission rate limiting |
+| `FORGE_LOCAL_LLM_ENABLED` | *(fork)* Master switch for the local LLM features (default off) |
+| `FORGE_LOCAL_BASE_URL` / `FORGE_LOCAL_API_KEY` / `FORGE_LOCAL_MODEL` | *(fork)* First-run defaults for the local server |
+| `FORGE_LOCAL_TIMEOUT` / `FORGE_LOCAL_MAX_TOKENS` | *(fork)* Read timeout (900 s) and output cap (8192) for local models |
+| `PANTRY_UPSTREAM_URL` | *(fork)* Public Pantry API to mirror (empty = off) |
+| `PANTRY_UPSTREAM_TTL_SECONDS` / `PANTRY_UPSTREAM_TIMEOUT_SECONDS` | *(fork)* Cache lifetime (300) and request timeout (8) |
+| `PANTRY_GITHUB_TOKEN` | *(fork)* Token for cloning private repositories when adding a package |
+
+## Staying in step with upstream
+
+The fork's changes are additive: new modules (`app/services/local_llm.py`, `app/services/upstream.py`,
+`app/api/local_commands.py`), one migration, and small hooks in `browse.py`, `command_detail.py`, `download.py`, `forge.py`
+and `llm_client.py`. Rebase `local-llm-settings` onto upstream `main` to take new releases.
 
 ## Testing
 
 ```bash
 pytest
 ```
+
+The fork's own tests are `tests/test_local_llm.py` (settings precedence, model detection, the `local:` model ids, the
+feature switch) and `tests/test_upstream.py` (merge order, shadowing, caching, offline fallback).
 
 ## License
 
