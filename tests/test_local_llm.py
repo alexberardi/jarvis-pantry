@@ -175,3 +175,17 @@ def test_disabled_by_default(client, monkeypatch):
     monkeypatch.delenv("FORGE_LOCAL_LLM_ENABLED", raising=False)
     config.get_settings.cache_clear()
     assert client.get("/v1/forge/features").json() == {"local_llm": False}
+
+
+def test_cors_preflight_allows_put_from_the_web_interface(client):
+    # The web interface is on another origin (port) than the API, so saving settings is a cross-origin PUT.
+    r = client.options(
+        "/v1/forge/local-llm",
+        headers={
+            "Origin": "http://10.0.0.20:7720",
+            "Access-Control-Request-Method": "PUT",
+            "Access-Control-Request-Headers": "content-type,x-admin-key",
+        },
+    )
+    assert r.status_code == 200
+    assert "PUT" in r.headers["access-control-allow-methods"]
