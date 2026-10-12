@@ -84,6 +84,66 @@ async def exchange_github_code(
     }
 
 
+# Usernames of Author rows that stand for the service itself, not a GitHub
+# account. A login never takes one over by name: GitHub accounts with these
+# names can exist or be registered by anyone.
+RESERVED_USERNAMES = frozenset({"pantry-operator", "local"})
+
+
+def resolve_author(db: Session, user_data: dict) -> "Author":
+    """The Author for a verified GitHub user (``GET /user``), created if new.
+
+    Matched by GitHub id. A name match only claims a row created before
+    OAuth (``github_id == 0``) and never a reserved one; any other row
+    holding the name belongs to a different GitHub account (one that was
+    renamed, or a service row), so this user gets a distinct username
+    instead of that row.
+    """
+    from .models import Author
+
+    github_id = user_data["id"]
+    login = user_data["login"]
+    display_name = user_data.get("name") or login
+    avatar_url = user_data.get("avatar_url")
+
+    def username_for(row_id: int | None) -> str:
+        holder = db.query(Author).filter(Author.github_username == login).first()
+        if holder is None or holder.id == row_id:
+            return login
+        return f"{login}~{github_id}"
+
+    author = db.query(Author).filter(Author.github_id == github_id).first()
+    if author:
+        if author.github_username != login:
+            # Renamed on GitHub.
+            author.github_username = username_for(author.id)
+            author.display_name = display_name
+            author.avatar_url = avatar_url
+            db.commit()
+        return author
+
+    pre_oauth = db.query(Author).filter(
+        Author.github_username == login, Author.github_id == 0,
+    ).first()
+    if pre_oauth and login.casefold() not in RESERVED_USERNAMES:
+        pre_oauth.github_id = github_id
+        pre_oauth.display_name = display_name
+        pre_oauth.avatar_url = avatar_url
+        db.commit()
+        return pre_oauth
+
+    author = Author(
+        github_id=github_id,
+        github_username=username_for(None),
+        display_name=display_name,
+        avatar_url=avatar_url,
+    )
+    db.add(author)
+    db.commit()
+    db.refresh(author)
+    return author
+
+
 def validate_github_token(
     authorization: str = Header(..., alias="Authorization"),
     db: Session = Depends(get_db),
@@ -92,8 +152,6 @@ def validate_github_token(
 
     Creates the Author if this is their first interaction.
     """
-    from .models import Author
-
     if not authorization.startswith("Bearer "):
         raise HTTPException(401, "Invalid authorization header")
 
@@ -113,40 +171,7 @@ def validate_github_token(
     if resp.status_code != 200:
         raise HTTPException(401, "Invalid GitHub token")
 
-    user_data = resp.json()
-    github_id = user_data["id"]
-    github_username = user_data["login"]
-
-    # Find or create author — check by github_id first, then username fallback
-    # (handles migration from pre-OAuth records that have github_id=0)
-    author = db.query(Author).filter(Author.github_id == github_id).first()
-    if not author:
-        # Check if there's a record with matching username but github_id=0 (pre-OAuth)
-        author = db.query(Author).filter(
-            Author.github_username == github_username,
-        ).first()
-        if author and author.github_id == 0:
-            # Upgrade pre-OAuth record with real github_id
-            author.github_id = github_id
-            author.display_name = user_data.get("name") or github_username
-            author.avatar_url = user_data.get("avatar_url")
-            db.commit()
-        elif not author:
-            author = Author(
-                github_id=github_id,
-                github_username=github_username,
-                display_name=user_data.get("name") or github_username,
-                avatar_url=user_data.get("avatar_url"),
-            )
-            db.add(author)
-            db.commit()
-            db.refresh(author)
-    elif author.github_username != github_username:
-        # Username may have changed
-        author.github_username = github_username
-        author.display_name = user_data.get("name") or github_username
-        author.avatar_url = user_data.get("avatar_url")
-        db.commit()
+    author = resolve_author(db, resp.json())
 
     if author.suspended:
         raise HTTPException(403, "Author account is suspended")
