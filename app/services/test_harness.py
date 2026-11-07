@@ -36,9 +36,10 @@ def _find_class_in_module(module, base_class):
     """Find a subclass of base_class in the given module."""
     for attr_name in dir(module):
         cls = getattr(module, attr_name)
+        # An SDK class imported into the module (IJarvisMusicCommand) is not the package's class.
         if (isinstance(cls, type)
                 and issubclass(cls, base_class)
-                and cls is not base_class):
+                and not cls.__module__.startswith("jarvis_command_sdk")):
             return cls
     return None
 
