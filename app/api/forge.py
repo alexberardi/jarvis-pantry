@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -175,7 +175,7 @@ def detect_local_llm_models(
 
 
 @router.get("/v1/forge/spec")
-def get_forge_spec(format: str = Query("json", enum=["json", "markdown"])):
+def get_forge_spec(format: Literal["json", "markdown"] = Query("json")):
     """Get the Forge authoring spec.
 
     Returns the full SDK interface spec, manifest schema, file layout
