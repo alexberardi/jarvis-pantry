@@ -67,6 +67,9 @@ REQUIRED_PROMPT_PROVIDER_METHODS: list[str] = [
     "name", "build_system_prompt", "get_capabilities",
 ]
 
+# SDK classes that subclass a component's base and count as it (IJarvisMusicCommand is a command).
+BASE_CLASS_SUBCLASSES: dict[str, tuple[str, ...]] = {"IJarvisCommand": ("IJarvisMusicCommand",)}
+
 # Map component type → (base class name, required methods)
 COMPONENT_TYPE_INFO: dict[str, tuple[str, list[str]]] = {
     "command": ("IJarvisCommand", REQUIRED_COMMAND_METHODS),
@@ -471,7 +474,7 @@ def _find_class_by_base(tree: ast.Module, base_class_name: str) -> ast.ClassDef 
             continue
         for base in node.bases:
             name = _get_name(base)
-            if name and base_class_name in name:
+            if name and any(b in name for b in (base_class_name, *BASE_CLASS_SUBCLASSES.get(base_class_name, ()))):
                 return node
     return None
 

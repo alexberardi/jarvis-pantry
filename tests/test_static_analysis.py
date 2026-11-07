@@ -92,6 +92,11 @@ class TestASTValidation:
         assert result.passed is False
         assert any("IJarvisCommand" in e for e in result.errors)
 
+    def test_music_command_counts_as_a_command(self, tmp_path):
+        repo = _make_repo(tmp_path, VALID_COMMAND.replace("IJarvisCommand", "IJarvisMusicCommand"))
+        result = run_static_analysis(repo)
+        assert result.passed is True, result.errors
+
     def test_missing_required_methods(self, tmp_path):
         # Class inherits IJarvisCommand but has no methods
         code = """\
