@@ -200,6 +200,7 @@ class ForgeDraft(Base):
     package_name = Column(String(255), nullable=False)
     display_name = Column(String(255), nullable=True)
     files_json = Column(JSON, nullable=False)  # [{filename, content, language}]
+    feedback_json = Column(JSON, nullable=True)  # Send to Forge reports from test installs, oldest first
     expires_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime(timezone=True), default=_utcnow)
     updated_at = Column(DateTime(timezone=True), default=_utcnow, onupdate=_utcnow)

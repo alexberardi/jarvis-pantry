@@ -243,6 +243,8 @@ Pantry is single-tenant by design — no household scoping. To run a private sto
 | GET | `/v1/forge/spec` | — | Auto-generated SDK authoring spec |
 | POST | `/v1/forge/generate` | — (BYOK) | LLM generates package files |
 | POST | `/v1/forge/create-repo` | GitHub | Creates repo + pushes files |
+| POST | `/v1/forge/drafts/{code}/feedback` | — (share code, per-IP cap) | Send to Forge: a test install's result, the command's runs and a note, from jarvisd |
+| GET | `/v1/forge/sessions/{session_id}/feedback` | — (session id) | The reports sent to that Forge session's draft |
 | POST | `/v1/admin/commands/{name}/verify` | X-Admin-Key | Verified badge |
 | POST | `/v1/admin/commands/{name}/unpublish` | X-Admin-Key | Soft-delete |
 | POST | `/v1/admin/commands/from-repo` | X-Admin-Key (required) | Publish a package from a Git repository (unreviewed, local, listed publicly); 409 if the name belongs to a package not added this way |
