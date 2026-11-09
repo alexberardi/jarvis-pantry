@@ -12,6 +12,8 @@ from typing import Any
 
 import httpx
 
+from app.services.llm_client import claude_text
+
 
 SECURITY_REVIEW_PROMPT = """\
 You are a security auditor for a voice assistant command plugin system.
@@ -245,19 +247,18 @@ async def _call_claude(prompt: str, api_key: str) -> SecurityReviewResult:
                 "Content-Type": "application/json",
             },
             json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 1024,
+                "model": "claude-sonnet-5-5",
+                "max_tokens": 8192,
                 "messages": [{"role": "user", "content": prompt}],
             },
-            timeout=60.0,
+            timeout=180.0,
         )
 
     if resp.status_code != 200:
         raise RuntimeError(f"Claude API error: {resp.status_code} — {resp.text}")
 
     data = resp.json()
-    text = data["content"][0]["text"]
-    return _parse_review_response(text, data)
+    return _parse_review_response(claude_text(data), data)
 
 
 async def _call_openai(prompt: str, api_key: str) -> SecurityReviewResult:

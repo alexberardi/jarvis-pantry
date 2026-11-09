@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 # ── Model registry ────────────────────────────────────────────────────
-# Pricing per million tokens (as of 2026-03)
+# Pricing per million tokens (as of 2026-11)
 
 @dataclass
 class ModelConfig:
@@ -30,58 +30,68 @@ class ModelConfig:
     api_model: str            # Model ID sent to the API
     input_price: float        # $ per 1M input tokens
     output_price: float       # $ per 1M output tokens
-    max_tokens: int = 8192    # Max output tokens
+    max_tokens: int = 32000   # Max output tokens (current models think first, and thinking counts against this)
     api_type: str = "chat"    # "chat" for chat/completions, "responses" for responses API
 
 
 LLM_MODELS: dict[str, ModelConfig] = {
     "haiku": ModelConfig(
         id="haiku",
-        display_name="Claude Haiku 4.5",
+        display_name="Claude Haiku 5.5",
         provider="anthropic",
-        api_model="claude-haiku-4-5-20251001",
-        input_price=1.00,
-        output_price=5.00,
+        api_model="claude-haiku-5-5",
+        input_price=0.10,
+        output_price=0.50,
     ),
     "sonnet": ModelConfig(
         id="sonnet",
-        display_name="Claude Sonnet 4",
+        display_name="Claude Sonnet 5.5",
         provider="anthropic",
-        api_model="claude-sonnet-4-20250514",
-        input_price=3.00,
-        output_price=15.00,
+        api_model="claude-sonnet-5-5",
+        input_price=2.00,
+        output_price=10.00,
     ),
     "opus": ModelConfig(
         id="opus",
-        display_name="Claude Opus 4",
+        display_name="Claude Opus 5.5",
         provider="anthropic",
-        api_model="claude-opus-4-20250514",
-        input_price=15.00,
-        output_price=75.00,
+        api_model="claude-opus-5-5",
+        input_price=4.00,
+        output_price=20.00,
     ),
-    "gpt-4o": ModelConfig(
-        id="gpt-4o",
-        display_name="GPT-4o",
+    "fable": ModelConfig(
+        id="fable",
+        display_name="Claude Fable 5.1",
+        provider="anthropic",
+        api_model="claude-fable-5-1",
+        input_price=10.00,
+        output_price=50.00,
+    ),
+    "gpt-6.1-sol": ModelConfig(
+        id="gpt-6.1-sol",
+        display_name="GPT-6.1 Sol",
         provider="openai",
-        api_model="gpt-4o",
-        input_price=2.50,
+        api_model="gpt-6.1-sol",
+        input_price=2.00,
         output_price=10.00,
+        api_type="responses",
     ),
-    "chatgpt-5": ModelConfig(
-        id="chatgpt-5",
-        display_name="ChatGPT-5",
+    "gpt-6-astra": ModelConfig(
+        id="gpt-6-astra",
+        display_name="GPT-6 Astra",
         provider="openai",
-        api_model="chatgpt-5",
-        input_price=5.00,
-        output_price=15.00,
+        api_model="gpt-6-astra",
+        input_price=10.00,
+        output_price=50.00,
+        api_type="responses",
     ),
     "codex": ModelConfig(
         id="codex",
         display_name="Codex",
         provider="openai",
         api_model="gpt-5.3-codex",
-        input_price=1.50,
-        output_price=6.00,
+        input_price=1.75,
+        output_price=14.00,
         api_type="responses",
     ),
 }
@@ -159,8 +169,8 @@ async def call_claude(
     system_prompt: str,
     messages: list[dict[str, str]],
     api_key: str,
-    model: str = "claude-sonnet-4-20250514",
-    max_tokens: int = 8192,
+    model: str = "claude-sonnet-5-5",
+    max_tokens: int = 32000,
 ) -> str:
     """Call Anthropic API."""
     async with httpx.AsyncClient() as client:
@@ -177,14 +187,23 @@ async def call_claude(
                 "system": system_prompt,
                 "messages": messages,
             },
-            timeout=120.0,
+            timeout=600.0,
         )
 
     if resp.status_code != 200:
         raise RuntimeError(f"Claude API error: {resp.status_code} — {resp.text}")
 
-    data = resp.json()
-    return data["content"][0]["text"]
+    return claude_text(resp.json())
+
+
+def claude_text(data: dict[str, Any]) -> str:
+    """The answer text of a Messages API response; current models put thinking blocks before it."""
+    if data.get("stop_reason") == "refusal":
+        raise RuntimeError("Claude declined this request")
+    text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+    if not text:
+        raise RuntimeError(f"Claude returned no text (stop_reason: {data.get('stop_reason')})")
+    return text
 
 
 async def call_openai(
@@ -209,7 +228,7 @@ async def call_openai(
                 "max_tokens": max_tokens,
                 "messages": openai_messages,
             },
-            timeout=120.0,
+            timeout=600.0,
         )
 
     if resp.status_code != 200:
@@ -244,7 +263,7 @@ async def call_openai_responses(
                 "input": input_parts,
                 "max_output_tokens": max_tokens,
             },
-            timeout=120.0,
+            timeout=600.0,
         )
 
     if resp.status_code != 200:

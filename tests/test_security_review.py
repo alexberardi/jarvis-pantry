@@ -49,12 +49,17 @@ class TestRunSecurityReview:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
-            "content": [{"text": json.dumps({
-                "danger_score": 2,
-                "summary": "Uses API",
-                "concerns": [],
-                "recommendation": "approve",
-            })}]
+            # Current models answer with a thinking block before the text.
+            "content": [
+                {"type": "thinking", "thinking": ""},
+                {"type": "text", "text": json.dumps({
+                    "danger_score": 2,
+                    "summary": "Uses API",
+                    "concerns": [],
+                    "recommendation": "approve",
+                })},
+            ],
+            "stop_reason": "end_turn",
         }
 
         with patch("app.services.security_review.httpx.AsyncClient") as mock_client:
@@ -110,3 +115,17 @@ class TestRunSecurityReview:
 
             with pytest.raises(RuntimeError, match="Claude API error"):
                 await run_security_review("code", "claude", "bad-key")
+
+
+class TestClaudeText:
+    def test_skips_thinking_and_joins_text(self):
+        from app.services.llm_client import claude_text
+        data = {"content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": "a"}, {"type": "text", "text": "b"}]}
+        assert claude_text(data) == "ab"
+
+    def test_refusal_and_empty_answers_raise(self):
+        from app.services.llm_client import claude_text
+        with pytest.raises(RuntimeError, match="declined"):
+            claude_text({"content": [], "stop_reason": "refusal"})
+        with pytest.raises(RuntimeError, match="max_tokens"):
+            claude_text({"content": [{"type": "thinking", "thinking": ""}], "stop_reason": "max_tokens"})
