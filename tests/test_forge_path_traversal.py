@@ -58,3 +58,13 @@ def test_normal_filename_still_written(controlled_tmp):
     result = fg._validate_generated_files(files)
     # a safe filename produces no "unsafe filename" error
     assert not any("unsafe filename" in e for e in result.errors)
+
+
+def test_language_comes_from_the_extension_not_the_model():
+    from app.services.forge_generator import language_for
+
+    assert language_for("command.py", "text") == "python"
+    assert language_for("jarvis_command.yaml", None) == "yaml"
+    assert language_for("README.md", "text") == "markdown"
+    assert language_for("LICENSE", "text") == "text"
+    assert language_for("Makefile", "makefile") == "makefile"
