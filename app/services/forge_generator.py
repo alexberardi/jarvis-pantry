@@ -38,6 +38,17 @@ class GeneratedFile:
     language: str  # for syntax highlighting: "python", "yaml", "markdown"
 
 
+_LANGUAGE_BY_EXTENSION = {".py": "python", ".yaml": "yaml", ".yml": "yaml", ".md": "markdown", ".json": "json"}
+
+
+def language_for(filename: str, claimed: str | None) -> str:
+    """Highlighting language from the file extension; models mislabel files when revising (every file came back "text")."""
+    for ext, language in _LANGUAGE_BY_EXTENSION.items():
+        if filename.lower().endswith(ext):
+            return language
+    return claimed or "text"
+
+
 @dataclass
 class ForgeValidation:
     """Results of pre-publish validation on generated code."""
@@ -358,7 +369,7 @@ def _parse_forge_response(text: str) -> ForgeResult:
         GeneratedFile(
             filename=f["filename"],
             content=f["content"],
-            language=f.get("language", "text"),
+            language=language_for(f["filename"], f.get("language")),
         )
         for f in parsed.get("files", [])
     ]
