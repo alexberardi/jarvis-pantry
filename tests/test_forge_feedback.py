@@ -18,6 +18,7 @@ def _draft(client, session_id="sess-1"):
 
 REPORT = {
     "install": {"status": "completed", "error": None, "details": {"commands": ["days_until_date"]}},
+    "events": [{"seq": 1, "kind": "log", "level": "WARNING", "message": "date missing"}],
     "runs": [{"command": "days_until_date", "arguments": '{"date": "2026-12-25"}',
               "output": {"success": False, "error": "KeyError: 'date'"}, "at": "2026-11-09T10:00:00Z"}],
     "note": "it crashed on Christmas",
@@ -33,6 +34,7 @@ class TestFeedback:
         assert len(reports) == 1
         assert reports[0]["runs"][0]["output"]["error"] == "KeyError: 'date'"
         assert reports[0]["note"] == "it crashed on Christmas"
+        assert reports[0]["events"][0]["message"] == "date missing"
         assert reports[0]["share_code"] == code
         assert reports[0]["received_at"]
 
@@ -75,3 +77,21 @@ class TestCleanup:
         db_session.commit()
         assert forge_drafts.cleanup_expired_drafts(db_session) == 1
         assert db_session.query(ForgeDraft).one().share_code == "AAAAAA"
+
+
+class TestDraftRateLimits:
+    """Drafts need no login (the share code is the secret), so reads and writes are capped per IP."""
+
+    def test_guessing_share_codes_is_capped(self, client, monkeypatch):
+        monkeypatch.setattr(forge_drafts._draft_read_limiter, "requests_per_hour", 2)
+        statuses = [client.get(f"/v1/forge/drafts/ZZZZZ{c}").status_code for c in "ABC"]
+        assert statuses == [404, 404, 429]
+
+    def test_saving_drafts_is_capped(self, client, monkeypatch):
+        monkeypatch.setattr(forge_drafts._draft_write_limiter, "requests_per_hour", 1)
+        _draft(client)
+        resp = client.post("/v1/forge/drafts", json={
+            "session_id": "sess-2", "package_name": "p",
+            "files": [{"filename": "command.py", "content": "x", "language": "python"}],
+        })
+        assert resp.status_code == 429

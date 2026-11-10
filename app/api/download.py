@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import Command, CommandVersion
-from ..rate_limiter import rate_limiter
+from ..rate_limiter import client_ip, rate_limiter
 from ..services import upstream
 
 router = APIRouter()
@@ -23,8 +23,8 @@ def download_command(
     Public endpoint. Increments install count on each call.
     Rate-limited by client IP.
     """
-    client_ip = request.client.host if request.client else "unknown"
-    if not rate_limiter.check(f"download:{client_ip}"):
+    ip = client_ip(request)
+    if not rate_limiter.check(f"download:{ip}"):
         raise HTTPException(429, "Rate limit exceeded")
 
     cmd = db.query(Command).filter(

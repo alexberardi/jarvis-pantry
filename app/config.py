@@ -27,6 +27,9 @@ class Settings(BaseSettings):
 
     # Rate limiting
     rate_limit_disabled: bool = Field(False, alias="RATE_LIMIT_DISABLED")
+    # Behind Fly's edge, the caller's address is the Fly-Client-IP header (Fly sets it; a
+    # client can't). Off elsewhere: without Fly in front, anyone could send that header.
+    trust_fly_client_ip: bool = Field(False, alias="TRUST_FLY_CLIENT_IP")
     rate_limit_per_ip_per_hour: int = Field(100, alias="RATE_LIMIT_PER_IP_PER_HOUR")
     submission_rate_limit_per_hour: int = Field(10, alias="SUBMISSION_RATE_LIMIT_PER_HOUR")
     submission_rate_limit_per_user_per_hour: int = Field(

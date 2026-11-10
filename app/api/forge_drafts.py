@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import ForgeDraft
-from ..rate_limiter import RateLimiter
+from ..rate_limiter import RateLimiter, client_ip
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -36,6 +36,10 @@ _MAX_REPORT_BYTES = 256 * 1024
 
 # Feedback is unauthenticated (the share code is the secret), so guessing codes is capped per IP.
 _feedback_limiter = RateLimiter(requests_per_hour=60)
+# Reading a draft returns its whole source, so code guessing is capped the same way; a test
+# install reads it twice (jarvisd, then the node). Saving one happens once per Forge generation.
+_draft_read_limiter = RateLimiter(requests_per_hour=120)
+_draft_write_limiter = RateLimiter(requests_per_hour=60)
 
 
 def _generate_share_code() -> str:
@@ -75,9 +79,11 @@ class ForgeDraftGetResponse(BaseModel):
 
 class ForgeFeedbackRequest(BaseModel):
     """What a household's jarvisd sends after a test install: the install outcome, the
-    command's runs during the test window and the developer's note."""
+    command's runs during the test window, what else it did on the node (events: its log lines,
+    device scans and controls) and the developer's note."""
     install: dict
     runs: list[dict] = []
+    events: list[dict] = []
     note: str | None = None
 
 
@@ -89,6 +95,7 @@ class ForgeFeedbackRequest(BaseModel):
 @router.post("/v1/forge/drafts", response_model=ForgeDraftUpsertResponse)
 def upsert_draft(
     body: ForgeDraftUpsertRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> ForgeDraftUpsertResponse:
     """Create or update a Forge draft. Returns a share code.
@@ -96,6 +103,8 @@ def upsert_draft(
     If a draft with this session_id already exists, updates it and refreshes
     the expiry. Otherwise creates a new draft with a fresh share code.
     """
+    if not _draft_write_limiter.check(f"forge-draft-write:{client_ip(request)}"):
+        raise HTTPException(429, "Rate limit exceeded. Try again later.")
     if not body.files:
         raise HTTPException(400, "At least one file is required")
     if not body.package_name.strip():
@@ -170,9 +179,12 @@ def upsert_draft(
 @router.get("/v1/forge/drafts/{share_code}", response_model=ForgeDraftGetResponse)
 def get_draft(
     share_code: str,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> ForgeDraftGetResponse:
     """Retrieve a Forge draft by share code. Returns 404 if expired or not found."""
+    if not _draft_read_limiter.check(f"forge-draft-read:{client_ip(request)}"):
+        raise HTTPException(429, "Rate limit exceeded. Try again later.")
     draft = db.query(ForgeDraft).filter(
         ForgeDraft.share_code == share_code.upper(),
     ).first()
@@ -227,8 +239,8 @@ def add_feedback(
 ) -> dict:
     """Attach a Send to Forge report to a draft. Accepted until the draft is cleaned up,
     so a report from the end of the test window still lands after the code expired."""
-    client_ip = request.client.host if request.client else "unknown"
-    if not _feedback_limiter.check(f"forge-feedback:{client_ip}"):
+    ip = client_ip(request)
+    if not _feedback_limiter.check(f"forge-feedback:{ip}"):
         raise HTTPException(429, "Rate limit exceeded. Try again later.")
 
     report = body.model_dump()
