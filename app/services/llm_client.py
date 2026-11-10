@@ -32,6 +32,9 @@ class ModelConfig:
     output_price: float       # $ per 1M output tokens
     max_tokens: int = 32000   # Max output tokens (current models think first, and thinking counts against this)
     api_type: str = "chat"    # "chat" for chat/completions, "responses" for responses API
+    # Output cap when the browser streams the call (GET /v1/forge/prompt): streaming has no HTTP
+    # timeout to stay under. None: max_tokens.
+    stream_max_tokens: int | None = None
 
 
 LLM_MODELS: dict[str, ModelConfig] = {
@@ -40,6 +43,7 @@ LLM_MODELS: dict[str, ModelConfig] = {
         display_name="Claude Haiku 5.5",
         provider="anthropic",
         api_model="claude-haiku-5-5",
+        stream_max_tokens=128000,  # every current Claude model's output cap
         input_price=0.10,
         output_price=0.50,
     ),
@@ -48,6 +52,7 @@ LLM_MODELS: dict[str, ModelConfig] = {
         display_name="Claude Sonnet 5.5",
         provider="anthropic",
         api_model="claude-sonnet-5-5",
+        stream_max_tokens=128000,  # every current Claude model's output cap
         input_price=2.00,
         output_price=10.00,
     ),
@@ -56,6 +61,7 @@ LLM_MODELS: dict[str, ModelConfig] = {
         display_name="Claude Opus 5.5",
         provider="anthropic",
         api_model="claude-opus-5-5",
+        stream_max_tokens=128000,  # every current Claude model's output cap
         input_price=4.00,
         output_price=20.00,
     ),
@@ -64,6 +70,7 @@ LLM_MODELS: dict[str, ModelConfig] = {
         display_name="Claude Fable 5.1",
         provider="anthropic",
         api_model="claude-fable-5-1",
+        stream_max_tokens=128000,  # every current Claude model's output cap
         input_price=10.00,
         output_price=50.00,
     ),

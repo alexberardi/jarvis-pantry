@@ -7,6 +7,7 @@ from types import SimpleNamespace
 def _fake_settings(cap: int, disabled: bool = False):
     return SimpleNamespace(
         rate_limit_disabled=disabled,
+        trust_fly_client_ip=False,
         forge_generate_rate_limit_per_hour=cap,
         bypass_llm_key=False,
     )
@@ -14,11 +15,16 @@ def _fake_settings(cap: int, disabled: bool = False):
 
 async def _fake_generate(**kwargs):
     return SimpleNamespace(
-        package_name="test_pkg",
-        display_name="Test Pkg",
-        explanation="ok",
-        files=[SimpleNamespace(filename="command.py", content="x", language="python")],
-        validation=None,
+        result=SimpleNamespace(
+            package_name="test_pkg",
+            display_name="Test Pkg",
+            explanation="ok",
+            files=[SimpleNamespace(filename="command.py", content="x", language="python")],
+            validation=None,
+        ),
+        changed=["command.py"],
+        deleted=[],
+        complete=True,
     )
 
 
