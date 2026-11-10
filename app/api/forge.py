@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -21,7 +21,7 @@ from ..db import get_db
 from .admin_key import is_admin_key, require_admin_key
 from ..services import local_llm
 
-from ..rate_limiter import RateLimiter, _forge_generate_cap_per_hour
+from ..rate_limiter import RateLimiter, _forge_generate_cap_per_hour, client_ip
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -41,6 +41,56 @@ class ForgeGenerateRequest(BaseModel):
     model: str = "sonnet"  # Model ID from FORGE_MODELS registry
     llm_api_key: str
     conversation_history: list[dict[str, str]] | None = None
+    # The package as it is now: a revision's reply carries only the files it changes.
+    current_files: list[dict[str, str]] | None = None
+    package_name: str = ""
+    display_name: str = ""
+
+
+class ForgeParseRequest(BaseModel):
+    """A reply the browser got from a hosted model with the user's own key, and the package it revises."""
+
+    text: str
+    current_files: list[dict[str, str]] | None = None
+    package_name: str = ""
+    display_name: str = ""
+
+
+# Parsing is cheap but runs static analysis on a temp copy; the browser calls it once per generation.
+_parse_limiter = RateLimiter(requests_per_hour=240)
+_MAX_REPLY_CHARS = 2_000_000
+
+
+def _current(files: list[dict[str, str]] | None):
+    from ..services.forge_generator import GeneratedFile, language_for
+
+    return [
+        GeneratedFile(filename=f["filename"], content=f.get("content", ""), language=language_for(f["filename"], f.get("language")))
+        for f in files or []
+        if f.get("filename")
+    ]
+
+
+def _reply_json(reply) -> dict[str, Any]:
+    """The /generate and /parse answer: the whole package after the reply, and what it touched."""
+    result = reply.result
+    response: dict[str, Any] = {
+        "package_name": result.package_name,
+        "display_name": result.display_name,
+        "explanation": result.explanation,
+        "files": [{"filename": f.filename, "content": f.content, "language": f.language} for f in result.files],
+        "changed": reply.changed,
+        "deleted": reply.deleted,
+        "complete": reply.complete,
+    }
+    if result.validation:
+        response["validation"] = {
+            "passed": result.validation.passed,
+            "errors": result.validation.errors,
+            "warnings": result.validation.warnings,
+            "dangerous_patterns": result.validation.dangerous_patterns,
+        }
+    return response
 
 
 @router.get("/v1/forge/models")
@@ -175,7 +225,7 @@ def detect_local_llm_models(
 
 
 @router.get("/v1/forge/spec")
-def get_forge_spec(format: str = Query("json", enum=["json", "markdown"])):
+def get_forge_spec(format: Literal["json", "markdown"] = Query("json")):
     """Get the Forge authoring spec.
 
     Returns the full SDK interface spec, manifest schema, file layout
@@ -201,8 +251,8 @@ async def generate_package(body: ForgeGenerateRequest, request: Request, db: Ses
     """
     from ..config import get_settings
 
-    client_ip = request.client.host if request.client else "unknown"
-    if not _generate_limiter.check(f"forge-generate:{client_ip}"):
+    ip = client_ip(request)
+    if not _generate_limiter.check(f"forge-generate:{ip}"):
         raise HTTPException(429, "Rate limit exceeded. Try again later.")
 
     if not body.description.strip():
@@ -215,42 +265,111 @@ async def generate_package(body: ForgeGenerateRequest, request: Request, db: Ses
 
     local_cfg = local_llm.get_config(db)
     try:
-        result = await do_generate(
+        reply = await do_generate(
             description=body.description.strip(),
             llm_api_key=body.llm_api_key.strip(),
             model_id=body.model,
             conversation_history=body.conversation_history,
             local_config=local_cfg,
             local_models=local_llm.get_stored_models(db),
+            current_files=_current(body.current_files),
+            package_name=body.package_name,
+            display_name=body.display_name,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
     except RuntimeError as e:
         raise HTTPException(502, str(e))
+    return _reply_json(reply)
 
-    response: dict[str, Any] = {
-        "package_name": result.package_name,
-        "display_name": result.display_name,
-        "explanation": result.explanation,
-        "files": [
-            {
-                "filename": f.filename,
-                "content": f.content,
-                "language": f.language,
-            }
-            for f in result.files
-        ],
+
+@router.get("/v1/forge/prompt")
+def get_forge_prompt(model: str = Query("sonnet"), tools: bool = Query(False)):
+    """What the browser needs to call a hosted model itself with the user's key: the system prompt
+    and the model's API name and output cap. The key never reaches Pantry, and no request here waits
+    on a model (a long generation outlived proxy timeouts). Local models keep POST /v1/forge/generate:
+    their server and key are Pantry's settings. ``tools=true``: the browser gives the model the package
+    reading tools (GET /v1/forge/packages…), so the prompt tells it about them."""
+    from ..services.forge_generator import _build_system_prompt
+    from ..services.llm_client import LLM_MODELS
+
+    cfg = LLM_MODELS.get(model)
+    if cfg is None:
+        raise HTTPException(400, f"Unknown model: {model}")
+    return {
+        "model": cfg.id,
+        "provider": cfg.provider,
+        "api_type": cfg.api_type,
+        "api_model": cfg.api_model,
+        "max_tokens": cfg.stream_max_tokens or cfg.max_tokens,
+        "system": _build_system_prompt(tools=tools),
     }
 
-    if result.validation:
-        response["validation"] = {
-            "passed": result.validation.passed,
-            "errors": result.validation.errors,
-            "warnings": result.validation.warnings,
-            "dangerous_patterns": result.validation.dangerous_patterns,
-        }
 
-    return response
+@router.post("/v1/forge/parse")
+def parse_forge_reply(body: ForgeParseRequest, request: Request):
+    """Apply a model's reply to the package: its files replace or join the current ones, then the
+    whole package is validated. "complete" is false when the reply was cut off before === END ===."""
+    from ..services.forge_generator import merge_forge_reply
+
+    if not _parse_limiter.check(f"forge-parse:{client_ip(request)}"):
+        raise HTTPException(429, "Rate limit exceeded. Try again later.")
+    if len(body.text) > _MAX_REPLY_CHARS:
+        raise HTTPException(413, "Reply too large")
+    reply = merge_forge_reply(body.text, _current(body.current_files), body.package_name, body.display_name)
+    # The model ran in the browser: this is Pantry's one view of each generation (never the code).
+    v = reply.result.validation
+    logger.info(
+        "Forge reply applied: package=%s chars=%d changed=%s deleted=%s complete=%s files=%d validation=%s",
+        reply.result.package_name, len(body.text), reply.changed, reply.deleted, reply.complete, len(reply.result.files),
+        "none" if v is None else ("passed" if v.passed else f"{len(v.errors)} errors: {'; '.join(v.errors)[:300]}"),
+    )
+    return _reply_json(reply)
+
+
+# ── Package reading tools: the browser's model looks at published packages as references ──
+
+# A generation may make a few dozen tool calls; GitHub requests behind them are cached.
+_package_limiter = RateLimiter(requests_per_hour=600)
+_ComponentType = Literal["command", "agent", "device_protocol", "device_manager", "bundle"]
+
+
+def _package_files_call(request: Request, fn):
+    from ..services import package_files
+
+    if not _package_limiter.check(f"forge-packages:{client_ip(request)}"):
+        raise HTTPException(429, "Rate limit exceeded. Try again later.")
+    try:
+        return fn(package_files)
+    except package_files.PackageNotFound as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except package_files.PackageFilesError as e:
+        raise HTTPException(502, str(e))
+
+
+@router.get("/v1/forge/packages")
+def search_forge_packages(
+    request: Request,
+    q: str = Query("", max_length=200),
+    type: _ComponentType | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Published packages matching a query, optionally holding a component of one type."""
+    return _package_files_call(request, lambda pf: {"packages": pf.search(db, q, type)})
+
+
+@router.get("/v1/forge/packages/{name}/files")
+def list_forge_package_files(name: str, request: Request, db: Session = Depends(get_db)):
+    """A published package's files (path and size) at its latest published version, from GitHub."""
+    return _package_files_call(request, lambda pf: pf.list_files(db, name))
+
+
+@router.get("/v1/forge/packages/{name}/file")
+def read_forge_package_file(name: str, request: Request, path: str = Query(..., max_length=500), db: Session = Depends(get_db)):
+    """One text file of a published package at its latest published version (up to 200 KB)."""
+    return _package_files_call(request, lambda pf: pf.read_file(db, name, path))
 
 
 class CreateRepoRequest(BaseModel):

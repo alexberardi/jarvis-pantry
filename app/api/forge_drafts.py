@@ -6,16 +6,19 @@ users download the current package state to test on a node before publishing.
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import ForgeDraft
+from ..rate_limiter import RateLimiter, client_ip
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -25,6 +28,18 @@ _CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 _CODE_LENGTH = 6
 _EXPIRY_MINUTES = 15
 _MAX_RETRIES = 5
+# A node's test install lives 20 minutes, longer than a share code, so expired drafts are kept
+# this long for the reports sent back from them.
+_FEEDBACK_GRACE = timedelta(hours=1)
+_MAX_REPORTS = 10
+_MAX_REPORT_BYTES = 256 * 1024
+
+# Feedback is unauthenticated (the share code is the secret), so guessing codes is capped per IP.
+_feedback_limiter = RateLimiter(requests_per_hour=60)
+# Reading a draft returns its whole source, so code guessing is capped the same way; a test
+# install reads it twice (jarvisd, then the node). Saving one happens once per Forge generation.
+_draft_read_limiter = RateLimiter(requests_per_hour=120)
+_draft_write_limiter = RateLimiter(requests_per_hour=60)
 
 
 def _generate_share_code() -> str:
@@ -62,6 +77,16 @@ class ForgeDraftGetResponse(BaseModel):
     expires_at: datetime
 
 
+class ForgeFeedbackRequest(BaseModel):
+    """What a household's jarvisd sends after a test install: the install outcome, the
+    command's runs during the test window, what else it did on the node (events: its log lines,
+    device scans and controls) and the developer's note."""
+    install: dict
+    runs: list[dict] = []
+    events: list[dict] = []
+    note: str | None = None
+
+
 # =============================================================================
 # Endpoints
 # =============================================================================
@@ -70,6 +95,7 @@ class ForgeDraftGetResponse(BaseModel):
 @router.post("/v1/forge/drafts", response_model=ForgeDraftUpsertResponse)
 def upsert_draft(
     body: ForgeDraftUpsertRequest,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> ForgeDraftUpsertResponse:
     """Create or update a Forge draft. Returns a share code.
@@ -77,6 +103,8 @@ def upsert_draft(
     If a draft with this session_id already exists, updates it and refreshes
     the expiry. Otherwise creates a new draft with a fresh share code.
     """
+    if not _draft_write_limiter.check(f"forge-draft-write:{client_ip(request)}"):
+        raise HTTPException(429, "Rate limit exceeded. Try again later.")
     if not body.files:
         raise HTTPException(400, "At least one file is required")
     if not body.package_name.strip():
@@ -151,9 +179,12 @@ def upsert_draft(
 @router.get("/v1/forge/drafts/{share_code}", response_model=ForgeDraftGetResponse)
 def get_draft(
     share_code: str,
+    request: Request,
     db: Session = Depends(get_db),
 ) -> ForgeDraftGetResponse:
     """Retrieve a Forge draft by share code. Returns 404 if expired or not found."""
+    if not _draft_read_limiter.check(f"forge-draft-read:{client_ip(request)}"):
+        raise HTTPException(429, "Rate limit exceeded. Try again later.")
     draft = db.query(ForgeDraft).filter(
         ForgeDraft.share_code == share_code.upper(),
     ).first()
@@ -199,14 +230,59 @@ def delete_draft(
     return {"status": "deleted"}
 
 
+@router.post("/v1/forge/drafts/{share_code}/feedback", status_code=201)
+def add_feedback(
+    share_code: str,
+    body: ForgeFeedbackRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Attach a Send to Forge report to a draft. Accepted until the draft is cleaned up,
+    so a report from the end of the test window still lands after the code expired."""
+    ip = client_ip(request)
+    if not _feedback_limiter.check(f"forge-feedback:{ip}"):
+        raise HTTPException(429, "Rate limit exceeded. Try again later.")
+
+    report = body.model_dump()
+    if len(json.dumps(report)) > _MAX_REPORT_BYTES:
+        raise HTTPException(413, "Report too large")
+
+    draft = db.query(ForgeDraft).filter(
+        ForgeDraft.share_code == share_code.upper(),
+    ).first()
+    if not draft:
+        raise HTTPException(404, "Share code not found")
+
+    report["share_code"] = draft.share_code
+    report["received_at"] = datetime.now(timezone.utc).isoformat()
+    draft.feedback_json = ((draft.feedback_json or []) + [report])[-_MAX_REPORTS:]
+    flag_modified(draft, "feedback_json")
+    db.commit()
+
+    logger.info("Forge feedback received: code=%s runs=%d", draft.share_code, len(body.runs))
+    return {"status": "received"}
+
+
+@router.get("/v1/forge/sessions/{session_id}/feedback")
+def list_feedback(
+    session_id: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    """The reports sent to this Forge session's draft, oldest first."""
+    draft = db.query(ForgeDraft).filter(
+        ForgeDraft.session_id == session_id,
+    ).first()
+    return {"reports": (draft.feedback_json or []) if draft else []}
+
+
 # =============================================================================
 # Cleanup
 # =============================================================================
 
 
 def cleanup_expired_drafts(db: Session) -> int:
-    """Delete all expired forge drafts. Returns count deleted."""
-    now = datetime.now(timezone.utc)
-    count = db.query(ForgeDraft).filter(ForgeDraft.expires_at < now).delete()
+    """Delete forge drafts expired longer than the feedback grace. Returns count deleted."""
+    cutoff = datetime.now(timezone.utc) - _FEEDBACK_GRACE
+    count = db.query(ForgeDraft).filter(ForgeDraft.expires_at < cutoff).delete()
     db.commit()
     return count

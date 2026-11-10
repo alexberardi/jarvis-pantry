@@ -426,6 +426,7 @@ class TestQuickSubmit:
             lambda: SimpleNamespace(
                 bypass_llm_key=True,
                 rate_limit_disabled=False,
+                trust_fly_client_ip=False,
                 submission_rate_limit_per_hour=holder["cap"],
                 submission_rate_limit_per_user_per_hour=100,
                 max_concurrent_clones=5,
@@ -437,6 +438,7 @@ class TestQuickSubmit:
             "get_settings",
             lambda: SimpleNamespace(
                 rate_limit_disabled=False,
+                trust_fly_client_ip=False,
                 submission_rate_limit_per_hour=holder["cap"],
             ),
         )

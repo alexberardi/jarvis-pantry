@@ -242,7 +242,14 @@ Pantry is single-tenant by design — no household scoping. To run a private sto
 | POST | `/v1/forge/local-llm/detect` | X-Admin-Key (required) | List the models a server reports (`/v1/models`); the saved key is only sent to the saved server |
 | GET | `/v1/forge/spec` | — | Auto-generated SDK authoring spec |
 | POST | `/v1/forge/generate` | — (BYOK) | LLM generates package files |
+| GET | `/v1/forge/prompt` | — | System prompt + API settings for the browser to call a hosted model itself; `tools=true` mentions the package reading tools |
+| POST | `/v1/forge/parse` | rate-limit | Apply a model's plain-text reply to the package and validate it |
+| GET | `/v1/forge/packages` | rate-limit | Forge tool: search published packages (`q`, `type` = command/agent/device_protocol/device_manager/bundle); includes the upstream mirror |
+| GET | `/v1/forge/packages/{name}/files` | rate-limit | Forge tool: a published package's files at its latest version (reviewed SHA, else tag), from GitHub; max 500, cached |
+| GET | `/v1/forge/packages/{name}/file?path=` | rate-limit | Forge tool: one text file (≤ 200 KB) from that listing; catalogue repos only, relative paths only |
 | POST | `/v1/forge/create-repo` | GitHub | Creates repo + pushes files |
+| POST | `/v1/forge/drafts/{code}/feedback` | — (share code, per-IP cap) | Send to Forge: a test install's result, the command's runs and a note, from jarvisd |
+| GET | `/v1/forge/sessions/{session_id}/feedback` | — (session id) | The reports sent to that Forge session's draft |
 | POST | `/v1/admin/commands/{name}/verify` | X-Admin-Key | Verified badge |
 | POST | `/v1/admin/commands/{name}/unpublish` | X-Admin-Key | Soft-delete |
 | POST | `/v1/admin/commands/from-repo` | X-Admin-Key (required) | Publish a package from a Git repository (unreviewed, local, listed publicly); 409 if the name belongs to a package not added this way |

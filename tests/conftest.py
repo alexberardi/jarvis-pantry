@@ -17,10 +17,16 @@ def _reset_module_rate_limiters():
     # tests because TestClient's client.host is the constant "testclient".
     # Without this reset, the 11th quick-submit request in a session trips the
     # default IP cap and cascades 429s into unrelated tests.
-    from app.api.forge import _generate_limiter
+    from app.api.forge import _generate_limiter, _package_limiter, _parse_limiter
+    from app.api.forge_drafts import _draft_read_limiter, _draft_write_limiter, _feedback_limiter
     from app.api.submit import _submit_limiter
     from app.rate_limiter import rate_limiter
     _generate_limiter._buckets.clear()
+    _parse_limiter._buckets.clear()
+    _package_limiter._buckets.clear()
+    _feedback_limiter._buckets.clear()
+    _draft_read_limiter._buckets.clear()
+    _draft_write_limiter._buckets.clear()
     _submit_limiter._buckets.clear()
     rate_limiter._buckets.clear()
     yield

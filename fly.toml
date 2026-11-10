@@ -6,6 +6,7 @@ primary_region = "iad"
 
 [env]
   PANTRY_PORT = "8080"
+  TRUST_FLY_CLIENT_IP = "true"
 
 [http_service]
   internal_port = 8080

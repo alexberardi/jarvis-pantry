@@ -78,6 +78,42 @@ class TestAptPackagesInDetailResponse:
         assert resp.json()["apt_packages"] == ["mpv", "ffmpeg"]
 
 
+class TestTargetsInDetailResponse:
+    """The detail response exposes the manifest's `targets` (node, desktop) so
+    jarvisd and the mobile Store can keep Pi-only packages off computers.
+    An empty list means the package declared none."""
+
+    def _add_version(self, db_session, targets):
+        db_session.add(CommandVersion(
+            command_id=1,
+            version="1.3.0",
+            git_tag="v1.3.0",
+            manifest_json={"name": "get_stock_price", "version": "1.3.0", "targets": targets},
+            danger_rating=2,
+            min_jarvis_version="0.9.0",
+        ))
+        db_session.commit()
+
+    def test_targets_absent_returns_empty_list(self, client, seed_data):
+        resp = client.get("/v1/commands/get_stock_price")
+        assert resp.status_code == 200
+        assert resp.json()["targets"] == []
+
+    def test_targets_surfaced_from_manifest(self, db_session, client, seed_data):
+        self._add_version(db_session, ["node"])
+        resp = client.get("/v1/commands/get_stock_price")
+        assert resp.status_code == 200
+        assert resp.json()["targets"] == ["node"]
+
+    def test_targets_filters_non_string_entries(self, db_session, client, seed_data):
+        self._add_version(db_session, ["node", 7, None, "desktop"])
+        assert client.get("/v1/commands/get_stock_price").json()["targets"] == ["node", "desktop"]
+
+    def test_targets_not_a_list_returns_empty_list(self, db_session, client, seed_data):
+        self._add_version(db_session, "node")
+        assert client.get("/v1/commands/get_stock_price").json()["targets"] == []
+
+
 class TestListVersions:
     def test_not_found(self, client):
         resp = client.get("/v1/commands/nonexistent/versions")

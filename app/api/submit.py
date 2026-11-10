@@ -15,7 +15,7 @@ from ..auth import validate_github_token
 from ..config import get_settings
 from ..db import get_db
 from ..models import Author, Command, CommandVersion, Submission
-from ..rate_limiter import RateLimiter, _submission_cap_per_hour
+from ..rate_limiter import RateLimiter, _submission_cap_per_hour, client_ip
 from ..services.finalize import may_publish_to
 from ..services.github_service import (
     RepoValidationError,
@@ -384,8 +384,8 @@ async def quick_submit(
     settings = get_settings()
 
     # Rate limit
-    client_ip = request.client.host if request.client else "unknown"
-    if not _submit_limiter.check(client_ip):
+    ip = client_ip(request)
+    if not _submit_limiter.check(ip):
         raise HTTPException(429, "Rate limit exceeded. Try again later.")
 
     repo_url = body.repo_url.rstrip("/")

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 
 from .llm_client import (
@@ -38,6 +39,17 @@ class GeneratedFile:
     language: str  # for syntax highlighting: "python", "yaml", "markdown"
 
 
+_LANGUAGE_BY_EXTENSION = {".py": "python", ".yaml": "yaml", ".yml": "yaml", ".md": "markdown", ".json": "json"}
+
+
+def language_for(filename: str, claimed: str | None) -> str:
+    """Highlighting language from the file extension; models mislabel files when revising (every file came back "text")."""
+    for ext, language in _LANGUAGE_BY_EXTENSION.items():
+        if filename.lower().endswith(ext):
+            return language
+    return claimed or "text"
+
+
 @dataclass
 class ForgeValidation:
     """Results of pre-publish validation on generated code."""
@@ -59,8 +71,18 @@ class ForgeResult:
     validation: ForgeValidation | None = None
 
 
-def _build_system_prompt() -> str:
-    """Build the Forge system prompt from the SDK spec."""
+_PACKAGE_TOOLS = """
+You can search the published packages in the Pantry and read their files with your tools \
+(search_packages, list_package_files, read_package_file). When an existing package is a useful \
+reference, look at it yourself instead of asking the user to paste its code: for example, to \
+build a bridge-style device protocol, read how `zwave` (a device protocol that talks to Z-Wave \
+JS UI) is put together. Read only what you need, then write the reply in the output format below.
+"""
+
+
+def _build_system_prompt(tools: bool = False) -> str:
+    """Build the Forge system prompt from the SDK spec. ``tools``: the caller gives the model the package
+    reading tools (the browser path does; the server path for local models has none)."""
     # Imported lazily: the SDK is only needed to actually generate a package
     # (it's installed in the deployed image), so the module stays importable
     # for validation/tests without jarvis_command_sdk present.
@@ -95,17 +117,9 @@ ASK CLARIFYING QUESTIONS first. Do NOT generate code until you are confident abo
 - What parameters the user can pass via voice (if any)
 - Any platform restrictions
 
-When asking questions, respond with a JSON object like this:
-{{
-  "package_name": "",
-  "display_name": "",
-  "explanation": "I have a few questions before I generate your package:\\n\\n1. ...\\n2. ...\\n3. ...",
-  "files": []
-}}
-
-Use an empty `files` array and empty `package_name`/`display_name` when asking questions. \
-Put your questions in the `explanation` field. The user will answer and you can then \
-generate the full package.
+When asking questions, reply in the output format below with only an EXPLANATION \
+section holding your questions, and no FILE sections. The user will answer and you can \
+then generate the full package.
 
 If the user's description is already clear and unambiguous (e.g., "a command that \
 tells dad jokes using the icanhazdadjoke API"), skip the questions and generate directly.
@@ -120,45 +134,35 @@ Once you are ready to generate, produce a complete package with these files:
    - For bundles: multiple entry files in convention directories
 2. **jarvis_command.yaml** (single component) or **jarvis_package.yaml** (bundle) — Valid manifest
 3. **README.md** — Description, usage examples, configuration
-4. **LICENSE** — MIT license text (required for Pantry submission)
 
+Do not write a LICENSE file: Pantry adds the MIT license to every package.
+{_PACKAGE_TOOLS if tools else ""}
 ## Output Format
 
-Respond with ONLY a JSON object (no markdown fences, no explanation outside the JSON):
-{{
-  "package_name": "snake_case_name",
-  "display_name": "Human Readable Name",
-  "explanation": "Brief explanation of what was generated and how to use it",
-  "files": [
-    {{
-      "filename": "command.py",
-      "content": "...full file content...",
-      "language": "python"
-    }},
-    {{
-      "filename": "jarvis_command.yaml",
-      "content": "...full YAML content...",
-      "language": "yaml"
-    }},
-    {{
-      "filename": "README.md",
-      "content": "...full markdown content...",
-      "language": "markdown"
-    }},
-    {{
-      "filename": "LICENSE",
-      "content": "MIT License\\n\\nCopyright (c) 2026\\n\\nPermission is hereby granted, free of charge, to any person obtaining a copy...",
-      "language": "text"
-    }}
-  ]
-}}
+Reply in this plain-text format, with no JSON and no markdown fence around the reply. Each \
+file's content goes between its marker and the next marker exactly as it should be saved:
+
+=== PACKAGE ===
+package_name: snake_case_name
+display_name: Human Readable Name
+=== EXPLANATION ===
+Brief explanation of what was generated, or changed, and how to use it.
+=== FILE: command.py ===
+...the file's full content...
+=== FILE: jarvis_command.yaml ===
+...the file's full content...
+=== END ===
+
+When revising an existing package (the user's message includes its current files), write \
+ONLY the files you add or change, each in full; files you leave out are kept as they are. \
+To remove a file, add a line `=== DELETE: path ===`. Always finish with `=== END ===`.
 
 ## Critical Rules (violations will fail validation)
 
 ### Naming
 - command_name MUST be snake_case (e.g., "get_weather", "tell_dad_joke")
 - The manifest `name` field MUST exactly match the command_name property in command.py
-- The JSON response `package_name` MUST also match both of these
+- The PACKAGE section's `package_name` MUST also match both of these
 
 ### Manifest Format
 - author field MUST be: `author: {{ github: "community" }}` — NOT name/email
@@ -191,6 +195,11 @@ Respond with ONLY a JSON object (no markdown fences, no explanation outside the 
 ### Dependencies
 - If the command needs pip packages, declare them BOTH in `required_packages` property AND in the manifest `packages` list
 - If the command needs API keys, declare them as JarvisSecret in `required_secrets` AND in the manifest `secrets` list
+- Read a secret's value with the SDK's storage, the same way for every component type: \
+`from jarvis_command_sdk import JarvisStorage`, then `JarvisStorage("<package_name>").get_secret("KEY")` \
+(scope "integration" by default; pass `"user"` for user-scoped secrets). It returns None when unset. Read it \
+when needed, not once at import, since the user may set it later. NEVER import from `services.*`, `core.*` \
+or `utils.*`: those are the old Python node's internals and don't exist on current nodes.
 
 ### README
 - Every package MUST include a README.md — it is validated by the Pantry pipeline
@@ -229,7 +238,10 @@ async def generate_package(
     conversation_history: list[dict[str, str]] | None = None,
     local_config=None,
     local_models: list[str] | None = None,
-) -> ForgeResult:
+    current_files: list[GeneratedFile] | None = None,
+    package_name: str = "",
+    display_name: str = "",
+) -> ForgeReply:
     """Generate a Jarvis package from a natural language description.
 
     Args:
@@ -241,7 +253,7 @@ async def generate_package(
         conversation_history: Optional prior messages for iterative refinement.
 
     Returns:
-        ForgeResult with generated files and explanation.
+        ForgeReply: the whole package after the reply, and the files it changed or deleted.
     """
     model = LLM_MODELS.get(model_id)
     if not model and local_config is not None and local_config.configured:
@@ -273,15 +285,10 @@ async def generate_package(
         raise ValueError(f"Unsupported provider: {model.provider}")
 
     logger.info("Forge LLM response received, len=%d", len(raw))
-    result = _parse_forge_response(raw)
-
-    # Run validation on generated files (if there are any — skip for Q&A responses)
-    if result.files:
-        result.validation = _validate_generated_files(result.files)
-        if result.validation.errors:
-            logger.warning("Forge validation found errors: %s", result.validation.errors)
-
-    return result
+    reply = merge_forge_reply(raw, current_files, package_name, display_name)
+    if reply.result.validation and reply.result.validation.errors:
+        logger.warning("Forge validation found errors: %s", reply.result.validation.errors)
+    return reply
 
 
 def _validate_generated_files(files: list[GeneratedFile]) -> ForgeValidation:
@@ -341,8 +348,109 @@ def _validate_generated_files(files: list[GeneratedFile]) -> ForgeValidation:
     )
 
 
+_MARKER = re.compile(r"^=== (PACKAGE|EXPLANATION|END|FILE: (?P<file>.+?)|DELETE: (?P<delete>.+?)) ===[ \t]*$", re.M)
+
+MIT_LICENSE = """MIT License
+
+Copyright (c) {year} {holder}
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
+
+
+@dataclass
+class ForgeReply:
+    """A reply merged into the package it revises: the whole package, and what the reply touched."""
+
+    result: ForgeResult
+    changed: list[str]
+    deleted: list[str]
+    complete: bool  # the reply reached === END ===; False means it was cut off
+
+
+def merge_forge_reply(
+    text: str,
+    current_files: list[GeneratedFile] | None = None,
+    package_name: str = "",
+    display_name: str = "",
+) -> ForgeReply:
+    """Parse a reply in the text format (or the older JSON one) and apply it to the current files:
+    its FILE sections replace or add files, DELETE lines remove them, everything else is kept.
+    A package gets Pantry's MIT LICENSE when it has none."""
+    files = {f.filename: f for f in current_files or []}
+    stripped = text.strip()
+    if stripped.startswith("{") or stripped.startswith("```"):
+        old = _parse_forge_response(text)
+        changed = [f.filename for f in old.files]
+        for f in old.files:
+            files[f.filename] = f
+        explanation, deleted, complete = old.explanation, [], True
+        package_name = old.package_name if old.package_name not in ("", "unknown") else package_name
+        display_name = old.display_name if old.display_name not in ("", "Unknown") else display_name
+    else:
+        explanation, changed, deleted, complete = "", [], [], False
+        marks = list(_MARKER.finditer(text))
+        if not marks:  # no format at all: treat the reply as an answer to the user
+            explanation = stripped
+        for i, m in enumerate(marks):
+            body_end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+            body = text[m.end():body_end]
+            body = body[1:] if body.startswith("\n") else body
+            kind = m.group(1)
+            if kind == "END":
+                complete = True
+            elif kind == "PACKAGE":
+                for line in body.splitlines():
+                    key, _, value = line.partition(":")
+                    if key.strip() == "package_name" and value.strip():
+                        package_name = value.strip()
+                    elif key.strip() == "display_name" and value.strip():
+                        display_name = value.strip()
+            elif kind == "EXPLANATION":
+                explanation = body.strip()
+            elif m.group("delete"):
+                name = m.group("delete").strip()
+                deleted.append(name)
+                files.pop(name, None)
+            elif m.group("file"):
+                name = m.group("file").strip()
+                content = body[:-1] if body.endswith("\n") else body
+                files[name] = GeneratedFile(filename=name, content=content, language=language_for(name, None))
+                if name not in changed:
+                    changed.append(name)
+    if files and "LICENSE" not in files:
+        from datetime import date
+        files["LICENSE"] = GeneratedFile(
+            filename="LICENSE", content=MIT_LICENSE.format(year=date.today().year, holder="Jarvis community"),
+            language="text",
+        )
+    result = ForgeResult(
+        files=list(files.values()), explanation=explanation,
+        package_name=package_name or "unknown", display_name=display_name or "Unknown",
+    )
+    if changed or deleted:
+        result.validation = _validate_generated_files(result.files)
+    return ForgeReply(result=result, changed=changed, deleted=deleted, complete=complete)
+
+
 def _parse_forge_response(text: str) -> ForgeResult:
-    """Parse the JSON response from the LLM."""
+    """Parse the JSON response from the LLM (the format before the text one)."""
     cleaned = text.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
@@ -358,7 +466,7 @@ def _parse_forge_response(text: str) -> ForgeResult:
         GeneratedFile(
             filename=f["filename"],
             content=f["content"],
-            language=f.get("language", "text"),
+            language=language_for(f["filename"], f.get("language")),
         )
         for f in parsed.get("files", [])
     ]

@@ -10,6 +10,16 @@ from ..services import upstream
 router = APIRouter()
 
 
+def _manifest_strings(version: CommandVersion | None, key: str) -> list[str]:
+    """A list-of-strings manifest field from a version; [] when absent or malformed."""
+    if not version or not isinstance(version.manifest_json, dict):
+        return []
+    raw = version.manifest_json.get(key)
+    if not isinstance(raw, list):
+        return []
+    return [p for p in raw if isinstance(p, str)]
+
+
 @router.get("/v1/commands/{command_name}")
 def get_command(command_name: str, db: Session = Depends(get_db)):
     """Get full details for a command."""
@@ -41,11 +51,10 @@ def get_command(command_name: str, db: Session = Depends(get_db)):
                 "reviewed_at": report.reviewed_at.isoformat() if report.reviewed_at else None,
             }
 
-    apt_packages: list[str] = []
-    if latest_version and isinstance(latest_version.manifest_json, dict):
-        raw_apt = latest_version.manifest_json.get("apt_packages")
-        if isinstance(raw_apt, list):
-            apt_packages = [str(p) for p in raw_apt if isinstance(p, str)]
+    apt_packages = _manifest_strings(latest_version, "apt_packages")
+    # Where the package runs ("node", "desktop"); [] when it declares none.
+    # jarvisd and the mobile Store keep Pi-only packages off computers with it.
+    targets = _manifest_strings(latest_version, "targets")
 
     # Get reviews
     reviews = db.query(Review).filter(Review.command_id == cmd.id).all()
@@ -72,6 +81,7 @@ def get_command(command_name: str, db: Session = Depends(get_db)):
         "package_type": cmd.package_type or "command",
         "components": cmd.components or [],
         "apt_packages": apt_packages,
+        "targets": targets,
         "created_at": cmd.created_at.isoformat() if cmd.created_at else None,
         "updated_at": cmd.updated_at.isoformat() if cmd.updated_at else None,
         "security_report": security_report,

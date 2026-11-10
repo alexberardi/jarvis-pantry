@@ -9,10 +9,24 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Optional
 
+from starlette.requests import Request
+
 
 def _is_disabled() -> bool:
     from app.config import get_settings
     return get_settings().rate_limit_disabled
+
+
+def client_ip(request: Request) -> str:
+    """The caller's address for per-IP limits. On Fly it is Fly-Client-IP: uvicorn runs with
+    --forwarded-allow-ips '*', so request.client comes from X-Forwarded-For, which the caller
+    can set to anything and so get a fresh bucket on every request."""
+    from app.config import get_settings
+    if get_settings().trust_fly_client_ip:
+        fly = request.headers.get("fly-client-ip", "").strip()
+        if fly:
+            return fly
+    return request.client.host if request.client else "unknown"
 
 
 def _submission_cap_per_hour() -> int:
