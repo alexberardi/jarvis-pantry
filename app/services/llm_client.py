@@ -107,11 +107,11 @@ LLM_MODELS: dict[str, ModelConfig] = {
 LOCAL_PREFIX = "local:"
 
 
-def local_model_config(model_name: str, max_tokens: int | None = None) -> ModelConfig:
-    """ModelConfig for one model served by the configured local server."""
+def local_model_config(model_name: str, max_tokens: int | None = None, jarvis: bool = False) -> ModelConfig:
+    """ModelConfig for one model served by the configured local server (a Jarvis server's: a role)."""
     return ModelConfig(
         id=f"{LOCAL_PREFIX}{model_name}",
-        display_name=f"{model_name} (local)",
+        display_name=f"Jarvis {model_name} model" if jarvis else f"{model_name} (local)",
         provider="local",
         api_model=model_name,
         input_price=0.0,
@@ -135,6 +135,7 @@ def get_available_models(
     output_tokens: int = 6000,
     local_models: list[str] | None = None,
     local_default: str = "",
+    local_jarvis: bool = False,
 ) -> list[dict[str, Any]]:
     """Return model list with estimated per-generation costs.
 
@@ -149,7 +150,7 @@ def get_available_models(
     models: list[dict[str, Any]] = []
     ordered = sorted(local_models or [], key=lambda m: (m != local_default, m.lower()))
     for name in ordered:
-        cfg = local_model_config(name)
+        cfg = local_model_config(name, jarvis=local_jarvis)
         models.append({
             "id": cfg.id,
             "display_name": cfg.display_name,
@@ -293,22 +294,27 @@ async def call_local(
     model: str,
     max_tokens: int,
     base_url: str,
+    jarvis_app_id: str = "",
 ) -> str:
-    """Call a local OpenAI-compatible chat server.
+    """Call a local OpenAI-compatible chat server (or a Jarvis server: ``jarvis_app_id``).
 
     Local models are slower than hosted ones and some return their reasoning inline, so the timeout is long
     (``FORGE_LOCAL_TIMEOUT``, default 900 s) and any <think> block is removed before the reply reaches the parser.
     """
+    from .local_llm import auth_headers
+
     local_messages = [{"role": "system", "content": system_prompt}] + messages
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    headers = {"Content-Type": "application/json", **auth_headers(api_key, jarvis_app_id)}
+    body: dict[str, Any] = {"model": model, "max_tokens": max_tokens, "messages": local_messages}
+    if jarvis_app_id:
+        # Background priority even on the live model: a voice turn never waits behind a generation.
+        body["priority"] = "background"
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{base_url.rstrip('/')}/v1/chat/completions",
             headers=headers,
-            json={"model": model, "max_tokens": max_tokens, "messages": local_messages},
+            json=body,
             timeout=float(os.environ.get("FORGE_LOCAL_TIMEOUT", "900")),
         )
 

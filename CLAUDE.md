@@ -300,6 +300,7 @@ Required files in **every** package: manifest (`jarvis_command.yaml` or `jarvis_
 | `ALERT_WEBHOOK_URL` | optional | — | Slack/Discord webhook for abuse alerts |
 | `FORGE_LOCAL_LLM_ENABLED` | optional | `false` | Master switch for the local LLM features (Settings, `local:` models) |
 | `FORGE_LOCAL_BASE_URL` / `FORGE_LOCAL_API_KEY` / `FORGE_LOCAL_MODEL` | optional | — | First-run defaults for the local server; the saved settings win |
+| `FORGE_LOCAL_JARVIS_APP_ID` | optional | — | The local server is Jarvis (`http://<jarvis>:7700/llm`): a jarvisd app client's ID, with `FORGE_LOCAL_API_KEY` its key. Pantry then sends `X-Jarvis-App-Id`/`X-Jarvis-App-Key`, offers the `background` and `live` roles and asks for background priority |
 | `FORGE_LOCAL_TIMEOUT` / `FORGE_LOCAL_MAX_TOKENS` | optional | `900` / `8192` | Read timeout (seconds) and output cap for local models |
 | `PANTRY_UPSTREAM_URL` | optional | — | Public Pantry API to list next to local packages; empty = off |
 | `PANTRY_UPSTREAM_TTL_SECONDS` / `PANTRY_UPSTREAM_TIMEOUT_SECONDS` | optional | `300` / `8` | Cache lifetime and request timeout for the mirror |

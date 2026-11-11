@@ -28,7 +28,7 @@ def _clean(monkeypatch):
     monkeypatch.setenv("FORGE_LOCAL_LLM_ENABLED", "true")
     monkeypatch.setenv("ADMIN_API_KEY", "adm")
     config.get_settings.cache_clear()
-    for k in ("FORGE_LOCAL_BASE_URL", "FORGE_LOCAL_API_KEY", "FORGE_LOCAL_MODEL"):
+    for k in ("FORGE_LOCAL_BASE_URL", "FORGE_LOCAL_API_KEY", "FORGE_LOCAL_MODEL", "FORGE_LOCAL_JARVIS_APP_ID"):
         monkeypatch.delenv(k, raising=False)
     yield
     monkeypatch.delenv("FORGE_LOCAL_LLM_ENABLED", raising=False)
@@ -68,7 +68,8 @@ def test_settings_roundtrip_never_returns_key(client, monkeypatch):
     r = client.put("/v1/forge/local-llm", json={"base_url": "http://srv:8080/v1", "api_key": "k", "default_model": "m1"}, headers=ADMIN)
     assert r.status_code == 200
     body = r.json()
-    assert body == {"base_url": "http://srv:8080", "has_api_key": True, "default_model": "m1", "source": "database"}
+    assert body == {"base_url": "http://srv:8080", "has_api_key": True, "default_model": "m1", "jarvis_app_id": "",
+                    "source": "database"}
     assert "api_key" not in body
 
     # api_key omitted keeps the stored key; "" clears it
@@ -201,7 +202,7 @@ def test_generate_uses_selected_local_model_without_key(client, monkeypatch):
     client.put("/v1/forge/local-llm", json={"base_url": "http://srv:8080", "api_key": "srvkey"}, headers=ADMIN)
     captured = {}
 
-    async def fake_call_local(system_prompt, messages, api_key, model, max_tokens, base_url):
+    async def fake_call_local(system_prompt, messages, api_key, model, max_tokens, base_url, jarvis_app_id=""):
         captured.update(api_key=api_key, model=model, base_url=base_url)
         return '{"package_name": "x", "display_name": "X", "explanation": "ok", "files": []}'
 
@@ -288,3 +289,62 @@ def test_features_report_private_packages_and_mirror(client, monkeypatch):
     finally:
         monkeypatch.delenv("ADMIN_API_KEY"); monkeypatch.delenv("PANTRY_UPSTREAM_URL")
         config.get_settings.cache_clear()
+
+
+# ── A Jarvis server (jarvisd's LLM) ─────────────────────────────────────
+
+def test_jarvis_server_offers_its_roles_and_takes_its_app_headers(client, monkeypatch):
+    """jarvisd's /v1/models lists model files, but it runs any name other than background/live on the live model
+    (the one voice uses): the Forge offers the roles, background first, and sends jarvisd's app headers."""
+    seen = []
+    monkeypatch.setattr(httpx, "get", _fake_get(["gemma-4-26b-a4b", "gemma-4-31b"], seen=seen))
+    r = client.put("/v1/forge/local-llm", json={"base_url": "http://10.0.0.107:7700/llm", "api_key": "appkey",
+                                                 "jarvis_app_id": "forge"}, headers=ADMIN)
+    assert r.status_code == 200 and r.json()["jarvis_app_id"] == "forge" and r.json()["has_api_key"] is True
+    assert seen[-1] == ("http://10.0.0.107:7700/llm/v1/models", {"X-Jarvis-App-Id": "forge", "X-Jarvis-App-Key": "appkey"})
+    local = [m for m in client.get("/v1/forge/models").json()["models"] if m["provider"] == "local"]
+    assert [(m["id"], m["display_name"]) for m in local] == [
+        ("local:background", "Jarvis background model"), ("local:live", "Jarvis live model")]
+
+    # Cleared: an ordinary OpenAI-compatible server again, with its own model names.
+    client.put("/v1/forge/local-llm", json={"base_url": "http://10.0.0.107:7700/llm", "jarvis_app_id": ""}, headers=ADMIN)
+    assert seen[-1][1] == {"Authorization": "Bearer appkey"}
+    local = [m["id"] for m in client.get("/v1/forge/models").json()["models"] if m["provider"] == "local"]
+    assert local == ["local:gemma-4-26b-a4b", "local:gemma-4-31b"]
+
+
+def test_a_jarvis_server_needs_the_app_key(client, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _fake_get(["gemma-4-31b"]))
+    r = client.post("/v1/forge/local-llm/detect", json={"base_url": "http://j:7700/llm", "jarvis_app_id": "forge"},
+                    headers=ADMIN)
+    assert r.json() == {"ok": False, "error": "A Jarvis server needs the app's key as well as its ID", "models": []}
+
+
+def test_jarvis_generation_sends_app_headers_and_background_priority(monkeypatch):
+    """The chat call itself: jarvisd's headers (no Bearer), the role as the model, and background priority so a
+    voice turn never waits behind a generation."""
+    import asyncio
+
+    from app.services import llm_client
+
+    sent = {}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None, timeout=None):
+            sent.update(url=url, headers=headers, json=json)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "<think>x</think>reply"}}]},
+                                  request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    out = asyncio.run(llm_client.call_local("sys", [{"role": "user", "content": "hi"}], "appkey", "background", 8192,
+                                            "http://j:7700/llm", "forge"))
+    assert out == "reply"
+    assert sent["url"] == "http://j:7700/llm/v1/chat/completions"
+    assert sent["headers"] == {"Content-Type": "application/json", "X-Jarvis-App-Id": "forge", "X-Jarvis-App-Key": "appkey"}
+    assert sent["json"]["model"] == "background" and sent["json"]["priority"] == "background"

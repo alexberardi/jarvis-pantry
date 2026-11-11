@@ -3,6 +3,10 @@
 Settings live in the ``app_settings`` table so they can be changed from the web interface. Environment variables
 (``FORGE_LOCAL_BASE_URL``, ``FORGE_LOCAL_API_KEY``, ``FORGE_LOCAL_MODEL``) are the fallback, so a deployment that only
 sets them behaves as before. The model list comes from the server's ``/v1/models`` endpoint.
+
+A Jarvis server (jarvisd's LLM, ``http://<jarvis>:7700/llm``) is set up with a Jarvis app ID: it takes its app
+credentials as ``X-Jarvis-App-Id``/``X-Jarvis-App-Key`` headers, not a Bearer key, and serves roles, not model files:
+``background`` and ``live`` (any other model name would run on the live model, the one voice uses).
 """
 
 from __future__ import annotations
@@ -22,6 +26,10 @@ KEY_BASE_URL = "local_llm.base_url"
 KEY_API_KEY = "local_llm.api_key"
 KEY_DEFAULT_MODEL = "local_llm.default_model"
 KEY_MODELS = "local_llm.models"
+KEY_JARVIS_APP_ID = "local_llm.jarvis_app_id"
+
+# What a Jarvis server offers the Forge: its background model first (a long generation there never holds up voice).
+JARVIS_MODELS = ["background", "live"]
 
 
 
@@ -34,6 +42,7 @@ class LocalLLMConfig:
     base_url: str = ""
     api_key: str = ""
     default_model: str = ""
+    jarvis_app_id: str = ""  # set: the server is Jarvis, api_key is that app's key
     source: str = "none"  # "database", "environment" or "none"
 
     @property
@@ -85,22 +94,31 @@ def get_config(db: Session) -> LocalLLMConfig:
             key = os.environ.get("FORGE_LOCAL_API_KEY", "")
         if model is None:
             model = os.environ.get("FORGE_LOCAL_MODEL", "")
-        return LocalLLMConfig(base_url=base, api_key=key, default_model=model, source="database")
+        app_id = _get(db, KEY_JARVIS_APP_ID)
+        if app_id is None:
+            app_id = os.environ.get("FORGE_LOCAL_JARVIS_APP_ID", "")
+        return LocalLLMConfig(base_url=base, api_key=key, default_model=model, jarvis_app_id=app_id, source="database")
     env_base = os.environ.get("FORGE_LOCAL_BASE_URL", "").strip().rstrip("/")
     if env_base:
         return LocalLLMConfig(
             base_url=env_base,
             api_key=os.environ.get("FORGE_LOCAL_API_KEY", ""),
             default_model=os.environ.get("FORGE_LOCAL_MODEL", ""),
+            jarvis_app_id=os.environ.get("FORGE_LOCAL_JARVIS_APP_ID", ""),
             source="environment",
         )
     return LocalLLMConfig()
 
 
-def save_config(db: Session, base_url: str, api_key: str | None, default_model: str | None) -> LocalLLMConfig:
-    """Store settings. ``api_key`` None keeps the stored key, an empty string clears it."""
+def save_config(
+    db: Session, base_url: str, api_key: str | None, default_model: str | None, jarvis_app_id: str | None = None,
+) -> LocalLLMConfig:
+    """Store settings. ``api_key`` None keeps the stored key, an empty string clears it; ``jarvis_app_id`` likewise
+    (an empty string: not a Jarvis server)."""
     base_url = normalise_base_url(base_url)
     _set(db, KEY_BASE_URL, base_url)
+    if jarvis_app_id is not None:
+        _set(db, KEY_JARVIS_APP_ID, jarvis_app_id.strip())
     if api_key is not None:
         _set(db, KEY_API_KEY, api_key.strip())
     if default_model is not None:
@@ -109,12 +127,22 @@ def save_config(db: Session, base_url: str, api_key: str | None, default_model: 
     return get_config(db)
 
 
-def detect_models(base_url: str, api_key: str = "", timeout: float = 8.0) -> list[str]:
-    """Ask an OpenAI-compatible server which models it offers (GET /v1/models)."""
+def auth_headers(api_key: str, jarvis_app_id: str = "") -> dict[str, str]:
+    """A Jarvis server's app credentials, or an OpenAI-style Bearer key (none without a key)."""
+    if jarvis_app_id:
+        return {"X-Jarvis-App-Id": jarvis_app_id, "X-Jarvis-App-Key": api_key}
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
+def detect_models(base_url: str, api_key: str = "", timeout: float = 8.0, jarvis_app_id: str = "") -> list[str]:
+    """Ask an OpenAI-compatible server which models it offers (GET /v1/models). A Jarvis server answers with its
+    model files, but the Forge asks it for a role: once it answers, its models are JARVIS_MODELS."""
     base_url = normalise_base_url(base_url)
     if not base_url:
         raise LocalLLMError("No server URL set")
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    if jarvis_app_id and not api_key:
+        raise LocalLLMError("A Jarvis server needs the app's key as well as its ID")
+    headers = auth_headers(api_key, jarvis_app_id)
     try:
         resp = httpx.get(f"{base_url}/v1/models", headers=headers, timeout=timeout)
     except httpx.HTTPError as e:
@@ -128,6 +156,9 @@ def detect_models(base_url: str, api_key: str = "", timeout: float = 8.0) -> lis
         ids = [m["id"] for m in data["data"] if isinstance(m, dict) and m.get("id")]
     except (ValueError, KeyError, TypeError) as e:
         raise LocalLLMError("The server did not return an OpenAI-style model list") from e
+    if jarvis_app_id:
+        # Its /v1/models needs no credentials, so a wrong app key only shows at the first generation.
+        return list(JARVIS_MODELS)
     return sorted(set(ids), key=str.lower)
 
 

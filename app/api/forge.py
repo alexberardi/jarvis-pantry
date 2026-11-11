@@ -104,6 +104,7 @@ def get_forge_models(db: Session = Depends(get_db)):
     return {"models": get_available_models(
         local_models=local_llm.get_stored_models(db),
         local_default=cfg.default_model,
+        local_jarvis=bool(cfg.jarvis_app_id),
     )}
 
 
@@ -139,11 +140,13 @@ class LocalLLMSettingsRequest(BaseModel):
     base_url: str
     api_key: str | None = None   # None keeps the stored key, "" clears it
     default_model: str | None = None
+    jarvis_app_id: str | None = None  # None keeps it, "" clears it (not a Jarvis server)
 
 
 class LocalLLMDetectRequest(BaseModel):
     base_url: str | None = None  # None tests the saved server
     api_key: str | None = None
+    jarvis_app_id: str | None = None  # None: the saved server's
 
 
 def _settings_view(cfg: local_llm.LocalLLMConfig, show_url: bool = True) -> dict[str, Any]:
@@ -151,6 +154,7 @@ def _settings_view(cfg: local_llm.LocalLLMConfig, show_url: bool = True) -> dict
         "base_url": cfg.base_url if show_url else "",
         "has_api_key": bool(cfg.api_key),
         "default_model": cfg.default_model,
+        "jarvis_app_id": cfg.jarvis_app_id if show_url else "",
         "source": cfg.source,
     }
 
@@ -178,13 +182,13 @@ def put_local_llm_settings(
     _require_enabled()
     _require_admin(x_admin_key)
     try:
-        cfg = local_llm.save_config(db, body.base_url, body.api_key, body.default_model)
+        cfg = local_llm.save_config(db, body.base_url, body.api_key, body.default_model, body.jarvis_app_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
     # Refresh the model list the public endpoint serves, so a new server shows its models without another step.
     # An unreachable server just leaves an empty list.
     try:
-        local_llm.store_models(db, local_llm.detect_models(cfg.base_url, cfg.api_key))
+        local_llm.store_models(db, local_llm.detect_models(cfg.base_url, cfg.api_key, jarvis_app_id=cfg.jarvis_app_id))
     except (local_llm.LocalLLMError, ValueError):
         local_llm.store_models(db, [])
     return _settings_view(cfg)
@@ -215,8 +219,9 @@ def detect_local_llm_models(
         api_key = body.api_key if body.api_key is not None else saved.api_key
     else:
         api_key = body.api_key or ""
+    app_id = body.jarvis_app_id if body.jarvis_app_id is not None else saved.jarvis_app_id
     try:
-        models = local_llm.detect_models(base_url, api_key)
+        models = local_llm.detect_models(base_url, api_key, jarvis_app_id=app_id)
     except (local_llm.LocalLLMError, ValueError) as e:
         return {"ok": False, "error": str(e), "models": []}
     if is_saved_server:

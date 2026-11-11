@@ -273,7 +273,7 @@ async def generate_package(
     if model.provider == "local":
         raw = await call_local(
             system_prompt, messages, local_config.api_key,  # never the caller's key: it may be a hosted provider's
-            model.api_model, model.max_tokens, local_config.base_url,
+            model.api_model, model.max_tokens, local_config.base_url, local_config.jarvis_app_id,
         )
     elif model.provider == "anthropic":
         raw = await call_claude(system_prompt, messages, llm_api_key, model.api_model, model.max_tokens)
