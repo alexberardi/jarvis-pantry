@@ -194,8 +194,9 @@ that isn't discovered), so do all of these together. `daemon` (2026-11) is the w
    - The "Component types" table below.
 3. **The SDK this Pantry runs:** `SDK_REF` in `Dockerfile.local`; `Dockerfile.fly` installs `main`.
    Rebuild the cached test base image (gotcha 3 below) or the harness imports the old SDK.
-4. **jarvis-pantry-web:** the type union in `src/api/pantry.ts`, and the labels and icons in
-   `CommandCard.tsx` and `app/commands/[name]/page.tsx`.
+4. **jarvis-pantry-web:** the type union in `src/api/pantry.ts`, the labels and icons in
+   `CommandCard.tsx` and `app/commands/[name]/page.tsx`, and the search filter's enum in
+   `src/lib/forgeModel.ts`.
 5. **The node:** jarvis-server's `internal/agent/packages/manifest.go` (`componentDirs`,
    `conventional`, `NodeTypes`) and whatever loads the type in `internal/agent/sidecar`. The
    Python node (`jarvis-node-setup`) gets no new types.
