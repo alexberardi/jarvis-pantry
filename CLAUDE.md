@@ -179,11 +179,27 @@ Pantry doesn't host package content. It hosts metadata + the clone URL. **GitHub
 
 ### Add a new package type (e.g. `language_pack`)
 
-1. Add a base class to `jarvis-command-sdk` (e.g. `IJarvisLanguagePack`).
-2. Update `static_analysis.py`'s type table — required methods + base class check.
-3. Update `container_test.py:test_harness.py` — type-specific behavioral test.
-4. Update the install-dir mapping table (in this doc + in `jarvis-node-setup`'s install code).
-5. Update `forge_generator.py` system prompt so the LLM knows about the new type.
+The component types are listed in several repos and nothing checks that they agree. A type
+missing from one list fails quietly (an "unknown type" warning, a failed harness test, a folder
+that isn't discovered), so do all of these together. `daemon` (2026-11) is the worked example.
+
+1. **jarvis-command-sdk:** the base class, its `__forge_hints__`, and `forge.py` (the interface
+   list, the manifest's valid component types, the bundle layout, convention inference). The
+   Forge's prompt is generated from that spec, so `forge_generator.py` needs no edit.
+2. **This repo, four places:**
+   - `static_analysis.py`: `COMPONENT_TYPE_INFO` (base class + required methods).
+   - `github_service.py`: `dir_types` (the folder convention, for manifests without `components`).
+   - `test_harness.py`: `dir_types` again, a `_run_<type>_tests` runner and `_TYPE_RUNNERS`. An
+     unknown type is a failed test, which blocks publishing.
+   - The "Component types" table below.
+3. **The SDK this Pantry runs:** `SDK_REF` in `Dockerfile.local`; `Dockerfile.fly` installs `main`.
+   Rebuild the cached test base image (gotcha 3 below) or the harness imports the old SDK.
+4. **jarvis-pantry-web:** the type union in `src/api/pantry.ts`, the labels and icons in
+   `CommandCard.tsx` and `app/commands/[name]/page.tsx`, and the search filter's enum in
+   `src/lib/forgeModel.ts`.
+5. **The node:** jarvis-server's `internal/agent/packages/manifest.go` (`componentDirs`,
+   `conventional`, `NodeTypes`) and whatever loads the type in `internal/agent/sidecar`. The
+   Python node (`jarvis-node-setup`) gets no new types.
 6. Migration: the `commands` table's `components` JSON column is type-agnostic — no schema change usually needed.
 
 ### Add a new static analysis rule
@@ -279,6 +295,7 @@ Migrations: `alembic upgrade head`.
 |---|---|---|
 | `command` | `IJarvisCommand` | `commands/custom_commands/{name}/` |
 | `agent` | `IJarvisAgent` | `agents/custom_agents/{name}/` |
+| `daemon` | `IJarvisDaemon` | `daemons/{name}/` (jarvis-agent only; started once and kept running) |
 | `device_protocol` | `IJarvisDeviceProtocol` | `device_families/custom_families/{name}/` |
 | `device_manager` | `IJarvisDeviceManager` | `device_managers/custom_managers/{name}/` |
 | `routine` | JSON (routine.json) | `routines/custom_routines/{name}/` |
