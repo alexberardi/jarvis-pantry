@@ -436,6 +436,26 @@ class TestAgent(IJarvisAgent):
         return {}
 """
 
+VALID_DAEMON = """\
+from jarvis_command_sdk import IJarvisDaemon
+
+class TestDaemon(IJarvisDaemon):
+    @property
+    def name(self):
+        return "test_daemon"
+
+    @property
+    def description(self):
+        return "A test daemon"
+
+    @property
+    def required_secrets(self):
+        return []
+
+    async def run(self):
+        pass
+"""
+
 VALID_PROTOCOL = """\
 from jarvis_command_sdk import IJarvisDeviceProtocol
 
@@ -515,6 +535,30 @@ class BadAgent(IJarvisAgent):
         ])
         (repo / "agents" / "bad").mkdir(parents=True)
         (repo / "agents" / "bad" / "agent.py").write_text(incomplete_agent)
+
+        result = run_static_analysis(repo)
+        assert result.passed is False
+        assert any("missing required" in e.lower() for e in result.errors)
+
+    def test_bundle_valid_daemon(self, tmp_path):
+        """A daemon is a known component type: no unknown-type warning, and it passes."""
+        repo = _make_bundle_repo(tmp_path, [
+            {"type": "daemon", "name": "bridge", "path": "daemons/bridge/daemon.py"},
+        ])
+        (repo / "daemons" / "bridge").mkdir(parents=True)
+        (repo / "daemons" / "bridge" / "daemon.py").write_text(VALID_DAEMON)
+
+        result = run_static_analysis(repo)
+        assert result.passed is True
+        assert not any("unknown type" in w for w in result.warnings)
+
+    def test_bundle_daemon_missing_run(self, tmp_path):
+        """A daemon without run() fails."""
+        repo = _make_bundle_repo(tmp_path, [
+            {"type": "daemon", "name": "bridge", "path": "daemons/bridge/daemon.py"},
+        ])
+        (repo / "daemons" / "bridge").mkdir(parents=True)
+        (repo / "daemons" / "bridge" / "daemon.py").write_text(VALID_DAEMON.replace("    async def run(self):\n        pass\n", ""))
 
         result = run_static_analysis(repo)
         assert result.passed is False

@@ -55,6 +55,10 @@ REQUIRED_AGENT_METHODS: list[str] = [
     "name", "description", "schedule", "required_secrets", "run", "get_context_data",
 ]
 
+REQUIRED_DAEMON_METHODS: list[str] = [
+    "name", "description", "required_secrets", "run",
+]
+
 REQUIRED_PROTOCOL_METHODS: list[str] = [
     "protocol_name", "supported_domains", "discover", "control", "get_state",
 ]
@@ -74,6 +78,7 @@ BASE_CLASS_SUBCLASSES: dict[str, tuple[str, ...]] = {"IJarvisCommand": ("IJarvis
 COMPONENT_TYPE_INFO: dict[str, tuple[str, list[str]]] = {
     "command": ("IJarvisCommand", REQUIRED_COMMAND_METHODS),
     "agent": ("IJarvisAgent", REQUIRED_AGENT_METHODS),
+    "daemon": ("IJarvisDaemon", REQUIRED_DAEMON_METHODS),
     "device_protocol": ("IJarvisDeviceProtocol", REQUIRED_PROTOCOL_METHODS),
     "device_manager": ("IJarvisDeviceManager", REQUIRED_DEVICE_MANAGER_METHODS),
     "prompt_provider": ("IJarvisPromptProvider", REQUIRED_PROMPT_PROVIDER_METHODS),

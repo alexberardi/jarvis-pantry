@@ -149,12 +149,14 @@ def _infer_components_from_structure(repo_dir: Path, manifest_name: str) -> list
     - command.py at root → single command
     - commands/<name>/command.py → command(s)
     - agents/<name>/agent.py → agent(s)
+    - daemons/<name>/daemon.py → daemon(s)
     - device_families/<name>/protocol.py → device protocol(s)
     - device_managers/<name>/manager.py → device manager(s)
     """
     dir_types = {
         "commands": ("command", "command.py"),
         "agents": ("agent", "agent.py"),
+        "daemons": ("daemon", "daemon.py"),
         "device_families": ("device_protocol", "protocol.py"),
         "device_managers": ("device_manager", "manager.py"),
         "prompt_providers": ("prompt_provider", "provider.py"),

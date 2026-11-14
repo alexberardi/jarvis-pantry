@@ -59,6 +59,7 @@ def _infer_components_from_structure() -> list[dict]:
     dir_types = {
         "commands": ("command", "command.py"),
         "agents": ("agent", "agent.py"),
+        "daemons": ("daemon", "daemon.py"),
         "device_families": ("device_protocol", "protocol.py"),
         "device_managers": ("device_manager", "manager.py"),
         "prompt_providers": ("prompt_provider", "provider.py"),
@@ -297,6 +298,62 @@ def _run_agent_tests(record, comp_path: str = "agent.py") -> None:
         record("get_context_data", False, str(e))
 
 
+def _run_daemon_tests(record, comp_path: str = "daemon.py") -> None:
+    """Run tests for a daemon component. run() is never awaited: a daemon's runs until the
+    node cancels it, so the harness only checks that it is a coroutine function."""
+    import importlib
+    import inspect
+
+    comp_file = Path(comp_path)
+    if comp_file.parent != Path("."):
+        parent = Path(_REPO_DIR) / comp_file.parent
+        if str(parent) not in sys.path:
+            sys.path.insert(0, str(parent))
+
+    try:
+        mod = importlib.import_module(comp_file.stem)
+    except Exception as e:
+        record("import", False, f"Import failed: {e}")
+        return
+
+    try:
+        from jarvis_command_sdk import IJarvisDaemon
+    except ImportError:
+        record("find_class", False, "This Pantry's jarvis_command_sdk has no IJarvisDaemon (needs 0.17.0 or later)")
+        return
+    cls = _find_class_in_module(mod, IJarvisDaemon)
+    if cls is None:
+        record("find_class", False, f"No IJarvisDaemon subclass found in {comp_path}")
+        return
+    record("find_class", True)
+
+    try:
+        instance = cls()
+        record("instantiate", True)
+    except Exception as e:
+        record("instantiate", False, f"Instantiation failed: {e}")
+        return
+
+    for attr in ("name", "description"):
+        try:
+            value = getattr(instance, attr)
+            assert isinstance(value, str) and len(value) > 0
+            record(attr, True)
+        except Exception as e:
+            record(attr, False, str(e))
+
+    try:
+        assert isinstance(instance.required_secrets, list)
+        record("required_secrets", True)
+    except Exception as e:
+        record("required_secrets", False, str(e))
+
+    if inspect.iscoroutinefunction(cls.run):
+        record("run", True)
+    else:
+        record("run", False, "run must be declared with async def")
+
+
 def _run_protocol_tests(record, comp_path: str = "protocol.py") -> None:
     """Run tests for a device_protocol component."""
     import importlib
@@ -471,6 +528,7 @@ def _run_prompt_provider_tests(record, comp_path: str = "provider.py") -> None:
 _TYPE_RUNNERS = {
     "command": _run_command_tests,
     "agent": _run_agent_tests,
+    "daemon": _run_daemon_tests,
     "device_protocol": _run_protocol_tests,
     "device_manager": _run_device_manager_tests,
     "prompt_provider": _run_prompt_provider_tests,
