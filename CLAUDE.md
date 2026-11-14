@@ -200,6 +200,8 @@ that isn't discovered), so do all of these together. `daemon` (2026-11) is the w
 5. **The node:** jarvis-server's `internal/agent/packages/manifest.go` (`componentDirs`,
    `conventional`, `NodeTypes`) and whatever loads the type in `internal/agent/sidecar`. The
    Python node (`jarvis-node-setup`) gets no new types.
+   Also **jarvis-developer-toolkit** (`src/jdt/core/constants.py`, `core/manifest_model.py`, the
+   import checks): `jdt test` is what every package's CI runs.
 6. Migration: the `commands` table's `components` JSON column is type-agnostic — no schema change usually needed.
 
 ### Add a new static analysis rule
