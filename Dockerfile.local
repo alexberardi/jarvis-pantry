@@ -4,7 +4,7 @@
 FROM python:3.11-slim
 
 ARG SDK_REPO=https://github.com/alexberardi/jarvis-command-sdk
-ARG SDK_REF=5d5d74a
+ARG SDK_REF=b268183
 
 WORKDIR /app
 
